@@ -4,7 +4,9 @@
 // There is no network call in this file, and no document text is ever handed
 // to the model without the user approving it first (see /api/docs/search and
 // the approval sheet in the renderer).
-import { readdir, stat, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { readdir, stat, mkdir, readFile, writeFile, rm, rename, open } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { once } from 'node:events'
 import { createHash } from 'node:crypto'
 import { join, extname, basename, sep } from 'node:path'
 import { extractText, SUPPORTED } from './extract.mjs'
@@ -64,7 +66,8 @@ const idFor = (path) => createHash('sha1').update(path.toLowerCase()).digest('he
 /**
  * On-disk layout, all under the app's own user-data directory:
  *   index/manifest.json   roots, settings, one record per indexed document
- *   index/postings.jsonl  term -> doc frequencies, rebuilt whenever docs change
+ *   index/postings.jsonl  term -> doc frequencies, one line per term, sorted
+ *   index/postings.off    byte offset of each of those lines, for seeking
  *   index/text/<id>.txt   extracted text, so a passage can be shown without
  *                         re-parsing a 200-page PDF
  */
@@ -74,6 +77,7 @@ export class DocIndex {
     this.textDir = join(dir, 'text')
     this.manifestFile = join(dir, 'manifest.json')
     this.postingsFile = join(dir, 'postings.jsonl')
+    this.offsetsFile = join(dir, 'postings.off')
 
     this.roots = []
     this.docs = new Map() // id -> { id, path, name, ext, size, mtime, chars, indexedAt }
@@ -81,7 +85,11 @@ export class DocIndex {
     // scanned PDFs is not re-parsed from scratch on every single crawl - each
     // one costs a full pdf.js pass to learn the same nothing.
     this.empties = new Map() // id -> { size, mtime }
-    this.postings = null // term -> Map(id -> tf), loaded lazily
+    // The term index is never held in memory. `offsets` is the one resident
+    // part - eight bytes per distinct term, a few megabytes at any real size.
+    this.fd = null
+    this.offsets = null
+    this.postingsBytes = 0
     this.progress = {
       state: 'idle',
       scanned: 0,
@@ -261,10 +269,29 @@ export class DocIndex {
   }
 
   // ---- postings -----------------------------------------------------------
+  //
+  // The term index stays on disk. Holding it in memory cost 1.1GB resident on a
+  // real 38,000-document library - unacceptable for something that sits in the
+  // tray all day. Instead postings.jsonl is written with its terms in sorted
+  // order, and postings.off records where each line starts. A query binary
+  // searches the offset table and reads only the handful of lines it needs, so
+  // the resident cost is the offset table alone: eight bytes per distinct term.
 
-  /** Rebuilds the term index from the cached text and writes it out. */
+  /**
+   * Rebuilds the term index from the cached text and writes it out.
+   *
+   * Building still needs the whole term map in memory once, but it is packed:
+   * document ids are held as small integers into `ids` rather than as 16-char
+   * strings repeated in every posting list, and the file is streamed out rather
+   * than assembled as one enormous string.
+   */
   async buildPostings() {
-    const postings = new Map()
+    await this.closePostings()
+
+    const ids = [...this.docs.keys()]
+    const slot = new Map(ids.map((id, i) => [id, i]))
+    const postings = new Map() // term -> flat [docSlot, tf, docSlot, tf, ...]
+
     for (const doc of this.docs.values()) {
       let text
       try {
@@ -276,35 +303,112 @@ export class DocIndex {
       const counts = new Map()
       for (const t of tokenize(`${doc.name} ${text}`)) counts.set(t, (counts.get(t) ?? 0) + 1)
       doc.terms = [...counts.values()].reduce((a, b) => a + b, 0)
+      const s = slot.get(doc.id)
       for (const [term, tf] of counts) {
         let list = postings.get(term)
-        if (!list) postings.set(term, (list = new Map()))
-        list.set(doc.id, tf)
+        if (!list) postings.set(term, (list = []))
+        list.push(s, tf)
       }
     }
-    this.postings = postings
 
-    const lines = []
-    for (const [term, list] of postings) lines.push(JSON.stringify([term, [...list]]))
-    await writeFile(this.postingsFile, lines.join('\n'), 'utf8')
+    // Sorted, because that is what makes the on-disk binary search possible.
+    const terms = [...postings.keys()].sort()
+    const offsets = Buffer.allocUnsafe(terms.length * 8)
+    const tmpPostings = `${this.postingsFile}.tmp`
+    const tmpOffsets = `${this.offsetsFile}.tmp`
+
+    const out = createWriteStream(tmpPostings)
+    let pos = 0
+    for (let i = 0; i < terms.length; i++) {
+      const flat = postings.get(terms[i])
+      const list = []
+      for (let j = 0; j < flat.length; j += 2) list.push([ids[flat[j]], flat[j + 1]])
+      const buf = Buffer.from(`${JSON.stringify([terms[i], list])}\n`, 'utf8')
+      offsets.writeBigUInt64LE(BigInt(pos), i * 8)
+      pos += buf.length
+      if (!out.write(buf)) await once(out, 'drain')
+    }
+    out.end()
+    await once(out, 'finish')
+
+    await writeFile(tmpOffsets, offsets)
+    // Rename last, and offsets first: a half-written pair must never be read.
+    await rename(tmpPostings, this.postingsFile)
+    await rename(tmpOffsets, this.offsetsFile)
+    this.postingsBytes = pos
   }
 
-  /** Loads the term index on first search rather than at launch. */
-  async ensurePostings() {
-    if (this.postings) return this.postings
+  /**
+   * Opens the on-disk term index, building it if it is missing.
+   *
+   * The build can take a minute on a large library, and several searches can
+   * ask for it at once, so the work is memoised - the second caller waits on
+   * the first rather than starting a second rebuild.
+   */
+  ensurePostings() {
+    if (this.fd) return Promise.resolve()
+    this.opening ??= this.#openPostings().finally(() => {
+      this.opening = null
+    })
+    return this.opening
+  }
+
+  async #openPostings() {
     try {
-      const raw = await readFile(this.postingsFile, 'utf8')
-      const postings = new Map()
-      for (const line of raw.split('\n')) {
-        if (!line) continue
-        const [term, list] = JSON.parse(line)
-        postings.set(term, new Map(list))
-      }
-      this.postings = postings
+      this.offsets = await readFile(this.offsetsFile)
+      const st = await stat(this.postingsFile)
+      this.postingsBytes = st.size
+      this.fd = await open(this.postingsFile, 'r')
     } catch {
       await this.buildPostings()
+      this.offsets = await readFile(this.offsetsFile)
+      this.fd = await open(this.postingsFile, 'r')
     }
-    return this.postings
+  }
+
+  async closePostings() {
+    const fd = this.fd
+    this.fd = null
+    this.offsets = null
+    if (fd) await fd.close()
+  }
+
+  /** Number of distinct terms in the index. */
+  get termCount() {
+    return this.offsets ? this.offsets.length / 8 : 0
+  }
+
+  /** Byte range of the nth line of the postings file, newline excluded. */
+  #span(n) {
+    const start = Number(this.offsets.readBigUInt64LE(n * 8))
+    const next =
+      n + 1 < this.termCount ? Number(this.offsets.readBigUInt64LE((n + 1) * 8)) : this.postingsBytes
+    return { start, length: next - start - 1 }
+  }
+
+  async #lineAt(n) {
+    const { start, length } = this.#span(n)
+    const buf = Buffer.allocUnsafe(length)
+    await this.fd.read(buf, 0, length, start)
+    return JSON.parse(buf.toString('utf8'))
+  }
+
+  /**
+   * The posting list for one term as [[docId, tf], ...], read from disk.
+   * Returns an empty list for a term the index has never seen.
+   */
+  async lookup(term) {
+    await this.ensurePostings()
+    let lo = 0
+    let hi = this.termCount - 1
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      const [found, list] = await this.#lineAt(mid)
+      if (found === term) return list
+      if (found < term) lo = mid + 1
+      else hi = mid - 1
+    }
+    return []
   }
 
   readText(id) {

@@ -20,6 +20,10 @@ export async function initDocs(dir, defaultRoots = []) {
     index.roots = defaultRoots
     await index.save()
   }
+  // An index written before the term index moved to disk has no offset table,
+  // and rebuilding it takes about a minute on a large library. Do that now, in
+  // the background, rather than silently under the user's first search.
+  void index.ensurePostings().catch((err) => console.error('[docs] postings:', err.message))
   return index
 }
 

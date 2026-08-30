@@ -7,10 +7,50 @@ interface StreamHandlers {
   onDone: () => void
 }
 
-export interface Health {
+/** Which provider a credential belongs to. Mirrors server/providers.mjs. */
+export type ProviderId = 'anthropic' | 'openai'
+
+/** The primary provider: without it there is no app, only a connect prompt. */
+export const PRIMARY: ProviderId = 'anthropic'
+
+export const PROVIDER_IDS: ProviderId[] = ['anthropic', 'openai']
+
+/**
+ * What the connection dialog needs to say about each provider. The prefix
+ * duplicates a rule the service also enforces - deliberately, so an obviously
+ * malformed key costs no round trip. The service stays authoritative.
+ */
+export const PROVIDER_UI: Record<
+  ProviderId,
+  { tab: string; prefix: string; placeholder: string; purpose: string; malformed: string }
+> = {
+  anthropic: {
+    tab: 'CLAUDE',
+    prefix: 'sk-ant-',
+    placeholder: 'sk-ant-...',
+    purpose: 'Ø needs a Claude API key to think. It is verified, then stored on this machine only.',
+    malformed: 'That does not look like an Anthropic API key.',
+  },
+  openai: {
+    tab: 'OPENAI',
+    prefix: 'sk-',
+    placeholder: 'sk-...',
+    purpose:
+      'Voice needs an OpenAI API key to turn speech into text. Optional - without it, ' +
+      'everything else works exactly as it does now.',
+    malformed: 'That does not look like an OpenAI API key.',
+  },
+}
+
+export interface ProviderStatus {
+  label: string
   connected: boolean
   /** Last four characters of the stored key. Never the key itself (§16). */
   hint: string | null
+}
+
+export interface Health {
+  providers: Record<ProviderId, ProviderStatus>
   models: string[]
   default: string
 }
@@ -23,15 +63,15 @@ export interface KeyResult {
 }
 
 /**
- * Hands a key to the local service, which verifies it against Claude before
- * storing it. The key is never kept in renderer state beyond this call.
+ * Hands a key to the local service, which verifies it against that provider
+ * before storing it. The key is never kept in renderer state beyond this call.
  */
-export async function saveKey(key: string): Promise<KeyResult> {
+export async function saveKey(provider: ProviderId, key: string): Promise<KeyResult> {
   try {
     const res = await fetch('/api/key', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key }),
+      body: JSON.stringify({ provider, key }),
     })
     return (await res.json()) as KeyResult
   } catch {
@@ -39,9 +79,9 @@ export async function saveKey(key: string): Promise<KeyResult> {
   }
 }
 
-export async function clearKey(): Promise<void> {
+export async function clearKey(provider: ProviderId): Promise<void> {
   try {
-    await fetch('/api/key', { method: 'DELETE' })
+    await fetch(`/api/key?provider=${provider}`, { method: 'DELETE' })
   } catch {
     /* nothing to do - the UI refreshes from health either way */
   }

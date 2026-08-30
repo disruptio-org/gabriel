@@ -3,42 +3,52 @@
 // The window is frameless: the app draws its own chrome (the Ø titlebar with
 // + ─ ▢ ✕), and those controls drive the real OS window through the preload
 // bridge. The renderer is served over loopback by the same process that holds
-// the API key, so relative /api fetches work exactly as they do under Vite and
-// the credential never crosses into renderer code (§16).
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+// the API keys, so relative /api fetches work exactly as they do under Vite and
+// no credential ever crosses into renderer code (§16).
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { startServer } from '../server/index.mjs'
 import { defaultRoots } from '../server/docs/roots.mjs'
+import { PROVIDER_IDS, PRIMARY, setKeyEnv } from '../server/providers.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-// The installed app cannot read the repo's .env, and the key must never be
-// packaged into the installer. An installed build reads it from the per-user
+// The installed app cannot read the repo's .env, and no key must ever be
+// packaged into the installer. An installed build reads them from the per-user
 // config file instead: %APPDATA%/Personal Intelligence/.env
-// The credential at rest, encrypted by the OS (DPAPI on Windows) rather than
+// Credentials at rest are encrypted by the OS (DPAPI on Windows) rather than
 // left in a readable file - requirements §16 asks for the platform's own
 // credential mechanism where one exists.
-const vaultFile = () => join(app.getPath('userData'), 'credential.bin')
+//
+// One file per provider. The primary provider keeps the original filename so
+// that an existing install does not silently lose the key it already stored.
+const vaultFile = (provider) =>
+  join(
+    app.getPath('userData'),
+    provider === PRIMARY ? 'credential.bin' : `credential-${provider}.bin`,
+  )
 
-function loadStoredKey() {
+function loadStoredKeys() {
   if (!safeStorage.isEncryptionAvailable()) return
-  try {
-    const key = safeStorage.decryptString(readFileSync(vaultFile()))
-    if (key) process.env.ANTHROPIC_API_KEY = key
-  } catch {
-    /* nothing stored yet, or it was written by another OS user */
+  for (const provider of PROVIDER_IDS) {
+    try {
+      const key = safeStorage.decryptString(readFileSync(vaultFile(provider)))
+      if (key) setKeyEnv(provider, key)
+    } catch {
+      /* nothing stored for this provider, or it was written by another OS user */
+    }
   }
 }
 
 /** Handed to the service, which calls it once a key has been verified. */
-function persistKey(key) {
-  if (key === null) return void rmSync(vaultFile(), { force: true })
+function persistKey(provider, key) {
+  if (key === null) return void rmSync(vaultFile(provider), { force: true })
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('OS credential storage unavailable')
   }
-  writeFileSync(vaultFile(), safeStorage.encryptString(key), { mode: 0o600 })
+  writeFileSync(vaultFile(provider), safeStorage.encryptString(key), { mode: 0o600 })
 }
 
 function loadUserEnv() {
@@ -91,6 +101,20 @@ async function createWindow() {
     },
   })
 
+  // Without this, getUserMedia is refused with no prompt and no error the
+  // renderer can distinguish from a hardware failure - and only in the packaged
+  // app, because under Vite the page runs in a browser that asks the user
+  // itself. Microphone access is granted because the user asked for voice by
+  // pressing the button; everything else Chromium might request is refused.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media' || permission === 'audioCapture')
+  })
+  // The synchronous twin of the handler above, consulted for getUserMedia on
+  // some paths. Answering only one of the two leaves the failure intermittent.
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) =>
+    permission === 'media' || permission === 'audioCapture',
+  )
+
   win.removeMenu()
   win.once('ready-to-show', () => win.show())
 
@@ -129,7 +153,7 @@ ipcMain.handle('pi:phase', (_e, phase) => {
 app.whenReady().then(() => {
   // Encrypted store first; the plain .env stays as a fallback for a machine
   // where safeStorage is unavailable, and for seeding a fresh install.
-  loadStoredKey()
+  loadStoredKeys()
   loadUserEnv()
   return createWindow()
 })

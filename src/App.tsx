@@ -4,10 +4,12 @@ import { Chat } from './components/Chat'
 import { Composer } from './components/Composer'
 import { Approval } from './components/Approval'
 import { Connection } from './components/Connection'
+import { VoiceConsent } from './components/VoiceConsent'
 import { Library } from './components/Library'
 import { Desktop } from './components/Desktop'
-import { effectiveMotion, loadConfig } from './config'
-import { checkHealth, streamChat } from './lib/claude'
+import { effectiveMotion, loadConfig, saveConfig } from './config'
+import { checkHealth, streamChat, PRIMARY } from './lib/claude'
+import type { ProviderId, ProviderStatus } from './lib/claude'
 import { searchDocs, type Attachment, type DocHit } from './lib/docs'
 import { isDesktopApp, shell } from './lib/shell'
 import { c, ease, mono } from './theme'
@@ -65,7 +67,7 @@ function ChromeButton({
 }
 
 export default function App() {
-  const [config] = useState(loadConfig)
+  const [config, setConfig] = useState(loadConfig)
   const [phase, setPhase] = useState<Phase>('desktop')
   const [maxed, setMaxed] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
@@ -73,8 +75,20 @@ export default function App() {
   const [thinkLabel, setThinkLabel] = useState(THINK_LABELS[0]!)
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const [connected, setConnected] = useState(true)
-  const [keyHint, setKeyHint] = useState<string | null>(null)
+  const [providers, setProviders] = useState<Record<ProviderId, ProviderStatus> | null>(null)
   const [showConnection, setShowConnection] = useState(false)
+  // Which provider the dialog opens on. Reaching for voice without a key should
+  // land on the OpenAI tab, not on Claude's.
+  const [connectionTab, setConnectionTab] = useState<ProviderId | null>(null)
+  const [askVoiceConsent, setAskVoiceConsent] = useState(false)
+  // Incremented once consent is granted, which tells the composer to start the
+  // recording the user already asked for.
+  const [startVoiceSignal, setStartVoiceSignal] = useState(0)
+  // Hands-free and DOCS are mutually exclusive: the approval sheet needs someone
+  // at the keyboard to tick passages, and hands-free is defined by there not
+  // being one. Rather than let one silently weaken the other, each turns the
+  // other off, visibly.
+  const [handsFree, setHandsFree] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
   // Consent is per send: this only decides whether the local search runs at all.
   const [useDocs, setUseDocs] = useState(true)
@@ -82,6 +96,13 @@ export default function App() {
     null,
   )
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight })
+
+  /**
+   * Whether this send searches the library at all. Derived rather than stored,
+   * so the footer and the send path cannot disagree - if the composer says DOCS
+   * OFF, no search runs, which is the whole promise of the exclusion.
+   */
+  const docsActive = useDocs && !handsFree
 
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const convoRef = useRef<HTMLDivElement | null>(null)
@@ -99,8 +120,10 @@ export default function App() {
 
   const refreshHealth = useCallback(async () => {
     const h = await checkHealth()
-    setConnected(h?.connected ?? false)
-    setKeyHint(h?.hint ?? null)
+    // Only the primary provider decides whether the app is usable; a second
+    // provider's credential gates its own feature, never the conversation.
+    setProviders(h?.providers ?? null)
+    setConnected(h?.providers?.[PRIMARY]?.connected ?? false)
   }, [])
 
   useEffect(() => {
@@ -207,7 +230,7 @@ export default function App() {
   const send = useCallback(
     async (text: string) => {
       const next: Message[] = [...messages, { id: uid(), role: 'user', content: text }]
-      if (useDocs) {
+      if (docsActive) {
         const hits = (await searchDocs(text, 5)).filter((h) => h.passage && h.passage.hits > 0)
         if (hits.length > 0) {
           setPending({ text, next, hits })
@@ -218,7 +241,7 @@ export default function App() {
       generate(next)
       scrollBottom()
     },
-    [generate, messages, scrollBottom, useDocs],
+    [docsActive, generate, messages, scrollBottom],
   )
 
   /** Drops trailing assistant turns and re-runs from the last user message. */
@@ -290,7 +313,12 @@ export default function App() {
   useEffect(() => {
     if (phase !== 'chat') return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') stopGeneration()
+      if (e.key === 'Escape') {
+        stopGeneration()
+        // Escape means "stop what is happening", and in hands-free the thing
+        // happening includes the app's intention to listen again.
+        setHandsFree(false)
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault()
         newConversation()
@@ -425,8 +453,18 @@ export default function App() {
                 busy={busy}
                 connected={connected}
                 onConnect={() => setShowConnection(true)}
-                docs={useDocs}
-                onToggleDocs={() => setUseDocs((v) => !v)}
+                docs={docsActive}
+                onToggleDocs={() => {
+                  setUseDocs((v) => !v)
+                  setHandsFree(false)
+                }}
+                handsFree={handsFree}
+                onToggleHandsFree={() => setHandsFree((v) => !v)}
+                voiceConnected={providers?.openai?.connected ?? false}
+                onConnectVoice={() => setConnectionTab('openai')}
+                voiceConsent={config.voiceConsent}
+                onNeedVoiceConsent={() => setAskVoiceConsent(true)}
+                startVoiceSignal={startVoiceSignal}
                 status={thinking ? 'REASONING' : streamingId ? 'STREAMING' : 'READY'}
                 onSend={send}
                 onStop={stopGeneration}
@@ -453,14 +491,35 @@ export default function App() {
             />
           )}
 
+          {askVoiceConsent && (
+            <VoiceConsent
+              onAccept={() => {
+                const next = { ...config, voiceConsent: true }
+                setConfig(next)
+                saveConfig(next)
+                setAskVoiceConsent(false)
+                setStartVoiceSignal((n) => n + 1)
+              }}
+              onCancel={() => {
+                setAskVoiceConsent(false)
+                focusPrompt()
+              }}
+            />
+          )}
+
           {showLibrary && <Library onClose={() => setShowLibrary(false)} />}
 
-          {showConnection && (
+          {(showConnection || connectionTab) && (
             <Connection
-              hint={keyHint}
-              onClose={() => setShowConnection(false)}
+              providers={providers}
+              initial={connectionTab ?? PRIMARY}
+              onClose={() => {
+                setShowConnection(false)
+                setConnectionTab(null)
+              }}
               onDone={() => {
                 setShowConnection(false)
+                setConnectionTab(null)
                 void refreshHealth()
                 focusPrompt()
               }}
