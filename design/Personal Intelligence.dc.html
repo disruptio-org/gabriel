@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;padding:0;background:#050706;overflow:hidden}
+a{color:#69FF94}a:hover{color:#a4ffc0}
+@keyframes oBlink{0%,55%{opacity:1}56%,100%{opacity:0}}
+@keyframes oPulse{0%,100%{transform:scale(1);opacity:.92}50%{transform:scale(1.035);opacity:1}}
+@keyframes oSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes oFlick{0%,100%{opacity:.15}40%{opacity:.6}60%{opacity:.25}80%{opacity:.5}}
+#convo::-webkit-scrollbar{width:8px}
+#convo::-webkit-scrollbar-thumb{background:#1a241d;border-radius:4px}
+#convo::-webkit-scrollbar-track{background:transparent}
+#prompt::placeholder{color:#4d5a51}
+#prompt{caret-color:#69FF94}
+::selection{background:#275E38;color:#E8EEE9}
+</style>
+</helmet>
+<div onKeyDown="{{ rootKey }}" style="width:100vw;height:100vh;background:radial-gradient(ellipse 120% 90% at 50% 30%, #08100b 0%, #050706 55%, #030404 100%);font-family:'JetBrains Mono',monospace;position:relative;overflow:hidden">
+  <sc-if value="{{ isDesktop }}" hint-placeholder-val="{{ true }}">
+    <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px">
+      <div onClick="{{ launch }}" title="Personal Intelligence" style="width:96px;height:96px;border-radius:22px;background:linear-gradient(160deg,#0B0F0C,#060907);border:1px solid #16211a;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 40px rgba(105,255,148,0.07), inset 0 1px 0 rgba(232,238,233,0.04)" style-hover="box-shadow:0 0 60px rgba(105,255,148,0.16), inset 0 1px 0 rgba(232,238,233,0.06);border:1px solid #275E38">{{ iconGlyph }}</div>
+      <div style="color:#89958C;font-size:12px;letter-spacing:1px">Personal Intelligence</div>
+      <div style="color:#3d4a41;font-size:11px;letter-spacing:2px;text-transform:uppercase;margin-top:26px;animation:oPulse 3.4s ease-in-out infinite">click to summon</div>
+    </div>
+  </sc-if>
+  <sc-if value="{{ showWindow }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ winStyle }}">
+      <div style="height:38px;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 16px;user-select:none;flex:0 0 auto;border-bottom:1px solid rgba(105,255,148,0.06);opacity:{{ titleOpacity }};transition:opacity 500ms ease">
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="color:#69FF94;font-size:14px;font-weight:600">Ø</span>
+          <span style="color:#89958C;font-size:10px;letter-spacing:3px">PERSONAL INTELLIGENCE</span>
+        </div>
+        <div style="display:flex;align-items:stretch;height:38px">
+          <div onClick="{{ newConversation }}" title="New conversation (Ctrl+N)" style="width:44px;display:flex;align-items:center;justify-content:center;color:#4d5a51;font-size:14px;cursor:pointer" style-hover="color:#69FF94;background:rgba(105,255,148,0.05)">+</div>
+          <div onClick="{{ toDesktop }}" title="Minimize" style="width:44px;display:flex;align-items:center;justify-content:center;color:#4d5a51;font-size:12px;cursor:pointer" style-hover="color:#E8EEE9;background:rgba(232,238,233,0.05)">─</div>
+          <div onClick="{{ toggleMax }}" title="Maximize" style="width:44px;display:flex;align-items:center;justify-content:center;color:#4d5a51;font-size:11px;cursor:pointer" style-hover="color:#E8EEE9;background:rgba(232,238,233,0.05)">▢</div>
+          <div onClick="{{ toDesktop }}" title="Close" style="width:44px;display:flex;align-items:center;justify-content:center;color:#4d5a51;font-size:12px;cursor:pointer" style-hover="color:#E8EEE9;background:rgba(200,80,70,0.55)">✕</div>
+        </div>
+      </div>
+      <sc-if value="{{ isBoot }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ skipBoot }}" style="flex:1;position:relative;cursor:default">
+          {{ bootLayer }}
+        </div>
+      </sc-if>
+      <sc-if value="{{ isChat }}" hint-placeholder-val="{{ false }}">
+        <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px">
+            {{ readyGlyph }}
+            <div style="color:#89958C;font-size:13px;letter-spacing:.5px">What are we thinking about?</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ hasMessages }}" hint-placeholder-val="{{ false }}">
+          <div id="convo" style="flex:1;overflow-y:auto;padding:34px 40px 20px">
+            <div style="max-width:680px;margin:0 auto;display:flex;flex-direction:column;gap:34px">
+              <sc-for list="{{ messages }}" as="m" hint-placeholder-count="0">
+                <div style="display:flex;flex-direction:column;gap:9px">
+                  <div style="font-size:10px;letter-spacing:3px;font-weight:600;color:{{ m.labelColor }}">{{ m.label }}</div>
+                  {{ m.node }}
+                  <sc-if value="{{ m.showActions }}" hint-placeholder-val="{{ false }}">
+                    <div style="display:flex;gap:16px;margin-top:2px;opacity:.5" style-hover="opacity:1">
+                      <span onClick="{{ m.copy }}" style="color:#4d5a51;font-size:10px;letter-spacing:2px;cursor:pointer" style-hover="color:#69FF94">{{ m.copyLabel }}</span>
+                      <span onClick="{{ m.regen }}" style="color:#4d5a51;font-size:10px;letter-spacing:2px;cursor:pointer" style-hover="color:#69FF94">REGENERATE</span>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ m.showRetry }}" hint-placeholder-val="{{ false }}">
+                    <div onClick="{{ m.retry }}" style="color:#69FF94;font-size:10px;letter-spacing:2px;cursor:pointer;margin-top:2px;opacity:.7" style-hover="opacity:1">RETRY</div>
+                  </sc-if>
+                </div>
+              </sc-for>
+              <sc-if value="{{ thinking }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:12px">
+                  {{ thinkGlyph }}
+                  <span style="color:#4d5a51;font-size:11px;letter-spacing:1px;animation:oFlick 2s ease-in-out infinite">{{ thinkLabel }}</span>
+                </div>
+              </sc-if>
+              <div style="height:8px"></div>
+            </div>
+          </div>
+        </sc-if>
+        <div style="flex:0 0 auto;padding:14px 40px 22px">
+          <div style="max-width:680px;margin:0 auto;display:flex;align-items:flex-end;gap:12px;border:1px solid #16211a;background:#0B0F0C;border-radius:8px;padding:11px 12px 11px 16px;transition:border-color 200ms" style-focus="border-color:#275E38">
+            <span style="color:#275E38;font-size:13px;line-height:22px;flex:0 0 auto">›</span>
+            <textarea id="prompt" ref="{{ promptRef }}" rows="1" placeholder="What are we thinking about?" onKeyDown="{{ promptKey }}" onInput="{{ promptInput }}" style="flex:1;background:transparent;border:none;outline:none;resize:none;color:#E8EEE9;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:22px;max-height:160px;padding:0"></textarea>
+            <div onClick="{{ sendOrStop }}" title="{{ sendTitle }}" style="flex:0 0 auto;width:26px;height:26px;border-radius:5px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#4d5a51;font-size:12px" style-hover="color:#69FF94;background:rgba(105,255,148,0.07)">{{ sendIcon }}</div>
+          </div>
+          <div style="max-width:680px;margin:8px auto 0;display:flex;justify-content:space-between">
+            <span style="color:#2a352e;font-size:9.5px;letter-spacing:1.5px">ENTER SEND · SHIFT+ENTER NEWLINE · ESC STOP</span>
+            <span style="color:#2a352e;font-size:9.5px;letter-spacing:1.5px">{{ statusLine }}</span>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;userName&quot;: {&quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;Iago&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Identity&quot;}, &quot;animationMode&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;default&quot;: &quot;full&quot;, &quot;options&quot;: [&quot;full&quot;, &quot;reduced&quot;, &quot;off&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Motion&quot;}, &quot;model&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;default&quot;: &quot;claude-sonnet-4-5&quot;, &quot;options&quot;: [&quot;claude-sonnet-4-5&quot;, &quot;claude-haiku-4-5&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;AI&quot;}}">
+class Component extends DCLogic {
+  state = {
+    phase: 'desktop', // desktop | boot | chat
+    boot: { cursor: false, chars: [], converged: false, glyph: false, up: false, micro: '', g1: '', g2: '', pulse: false },
+    maxed: false,
+    messages: [], // {role, content, error?, stopped?}
+    thinking: false,
+    thinkLabel: 'thinking',
+    streamIdx: -1, // index of message being revealed
+    revealLen: 0,
+    copied: -1,
+  };
+  timers = []; genSeq = 0;
+  t(ms, fn) { this.timers.push(setTimeout(fn, ms)); }
+  clearTimers() { this.timers.forEach(clearTimeout); this.timers = []; }
+
+  componentDidMount() {
+    this._key = (e) => {
+      if (this.state.phase === 'boot') { this.skipBoot(); return; }
+      if (this.state.phase !== 'chat') return;
+      if (e.key === 'Escape') this.stopGen();
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); this.newConversation(); }
+    };
+    window.addEventListener('keydown', this._key);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this._key); this.clearTimers(); clearInterval(this.thinkTimer); clearInterval(this.revealTimer); }
+
+  // ---------- glyph ----------
+  glyph(size, mode) { // mode: ready|thinking|dormant|icon
+    const r = size * 0.30, c = size / 2, ext = r * 1.42;
+    const anim = mode === 'ready' ? 'oPulse 4s ease-in-out infinite' : 'none';
+    const strokeAnim = mode === 'thinking' ? 'oSpin 2.6s linear infinite' : 'none';
+    const glow = mode === 'dormant' ? 'drop-shadow(0 0 4px rgba(105,255,148,0.25))' : 'drop-shadow(0 0 8px rgba(105,255,148,0.45))';
+    const op = mode === 'dormant' ? 0.55 : 1;
+    return React.createElement('svg', { key: 'g', width: size, height: size, viewBox: '0 0 ' + size + ' ' + size, style: { filter: glow, opacity: op, animation: anim, overflow: 'visible' } },
+      React.createElement('circle', { cx: c, cy: c, r: r, fill: 'none', stroke: '#69FF94', strokeWidth: Math.max(1.5, size * 0.045) }),
+      React.createElement('g', { style: { transformOrigin: c + 'px ' + c + 'px', animation: strokeAnim } },
+        React.createElement('line', { x1: c - ext * 0.707, y1: c + ext * 0.707, x2: c + ext * 0.707, y2: c - ext * 0.707, stroke: '#69FF94', strokeWidth: Math.max(1.5, size * 0.045), strokeLinecap: 'round' })
+      )
+    );
+  }
+
+  // ---------- launch sequence ----------
+  launch = () => {
+    const mode = this.props.animationMode ?? 'full';
+    if (mode === 'off') { this.setState({ phase: 'chat' }); this.focusSoon(); return; }
+    if (mode === 'reduced') {
+      this.setState({ phase: 'boot', boot: { cursor: false, chars: [], converged: true, glyph: true, up: true, micro: '', g1: 'Hello, ' + this.userName() + '.', g2: 'What are we thinking about?', pulse: true } });
+      this.t(900, () => this.finishBoot());
+      return;
+    }
+    // full
+    const CH = '01<>/\\{}[]#$%&*+=?ØΔλΣ:;.'.split('');
+    const chars = [];
+    for (let i = 0; i < 30; i++) {
+      let tx, ty;
+      if (i < 22) { const a = (i / 22) * Math.PI * 2; tx = Math.cos(a) * 56; ty = Math.sin(a) * 56; }
+      else { const t = ((i - 22) / 7) * 2 - 1; tx = t * 76; ty = -t * 76; }
+      chars.push({ ch: CH[Math.floor(Math.random() * CH.length)], x0: (Math.random() - 0.5) * 460, y0: (Math.random() - 0.5) * 300, tx, ty, d: Math.random() * 250 });
+    }
+    this.setState({ phase: 'boot', boot: { cursor: false, chars: [], converged: false, glyph: false, up: false, micro: '', g1: '', g2: '', pulse: false } });
+    const B = (patch) => this.setState(s => ({ boot: Object.assign({}, s.boot, patch) }));
+    this.t(200, () => B({ cursor: true }));
+    this.t(420, () => B({ chars }));
+    this.t(650, () => B({ converged: true, cursor: false }));
+    this.t(700, () => B({ micro: 'INITIALIZING' }));
+    this.t(1000, () => B({ micro: 'CONTEXT: READY' }));
+    this.t(1300, () => B({ micro: 'REASONING: ONLINE' }));
+    this.t(1550, () => B({ micro: '', glyph: true }));
+    this.t(1850, () => B({ chars: [], pulse: true, up: true }));
+    this.typeText('g1', 'Hello, ' + this.userName() + '.', 2100, 34);
+    this.typeText('g2', 'What are we thinking about?', 2850, 24);
+    this.t(3650, () => this.finishBoot());
+  };
+  userName() { return (this.props.userName ?? 'Iago').trim() || 'Iago'; }
+  typeText(field, text, start, speed) {
+    for (let i = 1; i <= text.length; i++) this.t(start + i * speed, () => this.setState(s => ({ boot: Object.assign({}, s.boot, { [field]: text.slice(0, i) }) })));
+  }
+  skipBoot = () => { if (this.state.phase !== 'boot') return; this.clearTimers(); this.finishBoot(); };
+  finishBoot() { this.clearTimers(); this.setState({ phase: 'chat' }); this.focusSoon(); }
+  focusSoon() { setTimeout(() => { const el = this._prompt; if (el) el.focus(); }, 350); }
+  toDesktop = () => { this.stopGen(); this.setState({ phase: 'desktop' }); };
+  toggleMax = () => this.setState(s => ({ maxed: !s.maxed }));
+
+  // ---------- chat ----------
+  SYSTEM = "You are Ø, a personal thinking partner. Reason from first principles. Separate facts, assumptions, hypotheses and opinions explicitly. Challenge the user's framing and emotionally attractive conclusions rather than agreeing by default. Generate multiple hypotheses before converging. Consider second-order effects, opportunity cost and disconfirming evidence. Apply documented intellectual frameworks (inversion, subtraction, expected value, falsification) by idea, never by impersonating thinkers. Be imaginative but never invent facts; state uncertainty plainly. When information sufficient, give a concrete recommendation. If a missing fact materially changes the answer, ask one focused question. Write in clean concise Markdown. Keep responses tight — no filler, no flattery.";
+
+  send = () => {
+    const el = this._prompt; if (!el) return;
+    const text = el.value.trim(); if (!text || this.state.thinking || this.state.streamIdx >= 0) return;
+    el.value = ''; el.style.height = 'auto';
+    const messages = this.state.messages.concat([{ role: 'user', content: text }]);
+    this.setState({ messages });
+    this.generate(messages);
+  };
+  generate(messages) {
+    const seq = ++this.genSeq;
+    this.setState({ thinking: true, thinkLabel: 'thinking' });
+    const labels = ['thinking', 'examining assumptions', 'considering alternatives', 'synthesizing'];
+    let li = 0;
+    clearInterval(this.thinkTimer);
+    this.thinkTimer = setInterval(() => { li = (li + 1) % labels.length; if (this.state.thinking) this.setState({ thinkLabel: labels[li] }); }, 1700);
+    const api = messages.filter(m => !m.error).map(m => ({ role: m.role, content: m.content }));
+    window.claude.complete({ model: this.props.model ?? 'claude-sonnet-4-5', max_tokens: 3000, system: this.SYSTEM, messages: api })
+      .then(text => {
+        if (seq !== this.genSeq) return;
+        clearInterval(this.thinkTimer);
+        const msgs = this.state.messages.concat([{ role: 'assistant', content: text }]);
+        const idx = msgs.length - 1;
+        this.setState({ thinking: false, messages: msgs, streamIdx: idx, revealLen: 0 });
+        clearInterval(this.revealTimer);
+        this.revealTimer = setInterval(() => {
+          if (seq !== this.genSeq) { clearInterval(this.revealTimer); return; }
+          const full = this.state.messages[idx].content.length;
+          const next = Math.min(full, this.state.revealLen + 3 + Math.floor(Math.random() * 3));
+          this.setState({ revealLen: next });
+          this.scrollBottom();
+          if (next >= full) { clearInterval(this.revealTimer); this.setState({ streamIdx: -1 }); }
+        }, 14);
+      })
+      .catch(() => {
+        if (seq !== this.genSeq) return;
+        clearInterval(this.thinkTimer);
+        this.setState({ thinking: false, messages: this.state.messages.concat([{ role: 'assistant', content: "I couldn't reach Claude.", error: true }]) });
+      });
+  }
+  stopGen = () => {
+    if (this.state.thinking) { this.genSeq++; clearInterval(this.thinkTimer); this.setState({ thinking: false }); return; }
+    if (this.state.streamIdx >= 0) {
+      this.genSeq++; clearInterval(this.revealTimer);
+      const idx = this.state.streamIdx;
+      const msgs = this.state.messages.slice();
+      msgs[idx] = Object.assign({}, msgs[idx], { content: msgs[idx].content.slice(0, this.state.revealLen), stopped: true });
+      this.setState({ streamIdx: -1, messages: msgs });
+    }
+  };
+  regenerate = () => {
+    let msgs = this.state.messages.slice();
+    while (msgs.length && msgs[msgs.length - 1].role === 'assistant') msgs.pop();
+    this.setState({ messages: msgs, copied: -1 });
+    if (msgs.length) this.generate(msgs);
+  };
+  newConversation = () => { this.genSeq++; clearInterval(this.thinkTimer); clearInterval(this.revealTimer); this.setState({ messages: [], thinking: false, streamIdx: -1, copied: -1 }); this.focusSoon(); };
+  scrollBottom() { const c = document.getElementById('convo'); if (c) c.scrollTop = c.scrollHeight; }
+
+  // ---------- markdown ----------
+  inline(text, key) {
+    const out = []; let rest = text; let k = 0;
+    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)]+\))/;
+    while (rest) {
+      const m = rest.match(re);
+      if (!m) { out.push(rest); break; }
+      if (m.index > 0) out.push(rest.slice(0, m.index));
+      const tok = m[0];
+      if (tok[0] === '`') out.push(React.createElement('code', { key: key + '-' + k++, style: { fontFamily: "'JetBrains Mono',monospace", fontSize: '0.88em', background: '#101712', border: '1px solid #1a241d', borderRadius: 3, padding: '1px 5px', color: '#a4ffc0' } }, tok.slice(1, -1)));
+      else if (tok.startsWith('**')) out.push(React.createElement('strong', { key: key + '-' + k++, style: { color: '#fff', fontWeight: 600 } }, this.inline(tok.slice(2, -2), key + 'b' + k)));
+      else if (tok[0] === '*') out.push(React.createElement('em', { key: key + '-' + k++ }, this.inline(tok.slice(1, -1), key + 'i' + k)));
+      else { const mm = tok.match(/\[([^\]]+)\]\(([^)]+)\)/); out.push(React.createElement('a', { key: key + '-' + k++, href: mm[2], target: '_blank', style: { color: '#69FF94' } }, mm[1])); }
+      rest = rest.slice(m.index + tok.length);
+    }
+    return out;
+  }
+  renderMd(text, streaming) {
+    const bodyStyle = { fontFamily: "'Inter',sans-serif", fontSize: 14.5, lineHeight: 1.68, color: '#E8EEE9', margin: 0 };
+    const lines = text.split('\n');
+    const blocks = []; let i = 0, k = 0;
+    while (i < lines.length) {
+      const ln = lines[i];
+      if (ln.startsWith('```')) {
+        const lang = ln.slice(3).trim(); const code = [];
+        i++;
+        while (i < lines.length && !lines[i].startsWith('```')) code.push(lines[i++]);
+        i++;
+        const codeText = code.join('\n');
+        blocks.push(React.createElement('div', { key: k++, style: { border: '1px solid #1a241d', borderRadius: 6, overflow: 'hidden', margin: '4px 0' } },
+          React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 12px', background: '#0B0F0C', borderBottom: '1px solid #1a241d' } },
+            React.createElement('span', { style: { color: '#4d5a51', fontSize: 9.5, letterSpacing: 2, fontFamily: "'JetBrains Mono',monospace" } }, (lang || 'CODE').toUpperCase()),
+            React.createElement('span', { style: { color: '#4d5a51', fontSize: 9.5, letterSpacing: 2, cursor: 'pointer', fontFamily: "'JetBrains Mono',monospace" }, onClick: () => navigator.clipboard.writeText(codeText) }, 'COPY')),
+          React.createElement('pre', { style: { margin: 0, padding: '12px 14px', overflowX: 'auto', background: '#070a08', color: '#c9d6cc', fontFamily: "'JetBrains Mono',monospace", fontSize: 12.5, lineHeight: 1.6 } }, codeText)));
+        continue;
+      }
+      const h = ln.match(/^(#{1,4})\s+(.*)/);
+      if (h) { blocks.push(React.createElement('div', { key: k++, style: { fontFamily: "'JetBrains Mono',monospace", fontWeight: 600, color: '#E8EEE9', fontSize: h[1].length <= 2 ? 16 : 13.5, letterSpacing: 0.5, margin: '10px 0 2px' } }, this.inline(h[2], 'h' + k))); i++; continue; }
+      if (/^\s*([-*]|\d+\.)\s+/.test(ln)) {
+        const items = [];
+        while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
+          const num = lines[i].match(/^\s*(\d+)\.\s+(.*)/);
+          const bul = lines[i].match(/^\s*[-*]\s+(.*)/);
+          items.push({ marker: num ? num[1] + '.' : '·', text: num ? num[2] : bul[1] });
+          i++;
+        }
+        blocks.push(React.createElement('div', { key: k++, style: { display: 'flex', flexDirection: 'column', gap: 5, margin: '2px 0' } },
+          items.map((it, j) => React.createElement('div', { key: j, style: { display: 'flex', gap: 10 } },
+            React.createElement('span', { style: { color: '#69FF94', fontFamily: "'JetBrains Mono',monospace", fontSize: 12.5, lineHeight: '24px', flex: '0 0 auto', minWidth: 14 } }, it.marker),
+            React.createElement('div', { style: Object.assign({}, bodyStyle, { flex: 1 }) }, this.inline(it.text, 'li' + k + j))))));
+        continue;
+      }
+      if (ln.startsWith('>')) { blocks.push(React.createElement('div', { key: k++, style: Object.assign({}, bodyStyle, { borderLeft: '2px solid #275E38', paddingLeft: 14, color: '#89958C' }) }, this.inline(ln.replace(/^>\s?/, ''), 'q' + k))); i++; continue; }
+      if (/^\s*(---|\*\*\*)\s*$/.test(ln)) { blocks.push(React.createElement('div', { key: k++, style: { height: 1, background: '#1a241d', margin: '8px 0' } })); i++; continue; }
+      if (ln.trim() === '') { i++; continue; }
+      const para = [];
+      while (i < lines.length && lines[i].trim() !== '' && !/^(#|```|>|\s*([-*]|\d+\.)\s)/.test(lines[i])) para.push(lines[i++]);
+      blocks.push(React.createElement('p', { key: k++, style: bodyStyle }, this.inline(para.join(' '), 'p' + k)));
+    }
+    if (streaming) blocks.push(React.createElement('span', { key: 'cur', style: { display: 'inline-block', width: 8, height: 15, background: '#69FF94', animation: 'oBlink 1s steps(1) infinite', verticalAlign: 'text-bottom' } }));
+    return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } }, blocks);
+  }
+
+  // ---------- boot layer ----------
+  bootLayer() {
+    const b = this.state.boot;
+    const kids = [];
+    if (b.cursor) kids.push(React.createElement('span', { key: 'c', style: { position: 'absolute', left: '50%', top: '46%', transform: 'translate(-50%,-50%)', color: '#69FF94', fontSize: 16, animation: 'oBlink 0.9s steps(1) infinite' } }, '_'));
+    if (b.chars.length) kids.push(React.createElement('div', { key: 'f', style: { position: 'absolute', left: '50%', top: '44%', width: 0, height: 0 } },
+      b.chars.map((c, i) => React.createElement('span', { key: i, style: { position: 'absolute', left: 0, top: 0, color: '#69FF94', fontSize: 11, opacity: b.converged ? (b.glyph ? 0 : 0.75) : 0.3, transform: 'translate(' + (b.converged ? c.tx : c.x0) + 'px,' + (b.converged ? c.ty : c.y0) + 'px)', transition: 'transform 750ms cubic-bezier(0.22,1,0.36,1) ' + c.d + 'ms, opacity 500ms ease ' + (b.glyph ? 0 : c.d) + 'ms' } }, c.ch))));
+    kids.push(React.createElement('div', { key: 'g', style: { position: 'absolute', left: '50%', top: b.up ? '30%' : '44%', transform: 'translate(-50%,-50%)', opacity: b.glyph ? 1 : 0, transition: 'top 700ms cubic-bezier(0.22,1,0.36,1), opacity 600ms ease', animation: b.pulse ? 'oPulse 4s ease-in-out infinite' : 'none' } }, this.glyph(120, 'ready')));
+    if (b.micro) kids.push(React.createElement('div', { key: 'm', style: { position: 'absolute', left: '50%', bottom: '14%', transform: 'translateX(-50%)', color: '#3d4a41', fontSize: 9.5, letterSpacing: 4 } }, b.micro));
+    if (b.g1) kids.push(React.createElement('div', { key: 'g1', style: { position: 'absolute', left: '50%', top: '56%', transform: 'translateX(-50%)', color: '#E8EEE9', fontSize: 17, whiteSpace: 'nowrap' } }, b.g1));
+    if (b.g2) kids.push(React.createElement('div', { key: 'g2', style: { position: 'absolute', left: '50%', top: '65%', transform: 'translateX(-50%)', color: '#89958C', fontSize: 13.5, whiteSpace: 'nowrap' } }, b.g2, React.createElement('span', { style: { color: '#69FF94', animation: 'oBlink 0.9s steps(1) infinite' } }, ' _')));
+    return React.createElement('div', { style: { position: 'absolute', inset: 0 } }, kids);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const isBoot = s.phase === 'boot', isChat = s.phase === 'chat';
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1400;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 900;
+    let w, h;
+    if (isBoot) { w = 560; h = 400; }
+    else if (s.maxed) { w = vw - 4; h = vh - 4; }
+    else { w = Math.min(1020, vw - 60); h = Math.round(vh * 0.78); }
+    const winStyle = {
+      position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%,-50%)',
+      width: w, height: h, background: '#050706', border: '1px solid #16211a',
+      borderRadius: s.maxed ? 0 : 10, display: 'flex', flexDirection: 'column',
+      boxShadow: '0 30px 90px rgba(0,0,0,0.7), 0 0 70px rgba(105,255,148,0.05)',
+      transition: 'width 650ms cubic-bezier(0.22,1,0.36,1), height 650ms cubic-bezier(0.22,1,0.36,1), border-radius 300ms',
+      overflow: 'hidden'
+    };
+    const streaming = s.streamIdx >= 0;
+    const messages = s.messages.map((m, i) => {
+      const isUser = m.role === 'user';
+      const isStreamingMsg = i === s.streamIdx;
+      const shown = isStreamingMsg ? m.content.slice(0, s.revealLen) : m.content;
+      let node;
+      if (isUser) node = React.createElement('div', { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 13.5, lineHeight: 1.6, color: '#c9d6cc', whiteSpace: 'pre-wrap' } }, m.content);
+      else if (m.error) node = React.createElement('div', { style: { fontFamily: "'Inter',sans-serif", fontSize: 14.5, color: '#89958C' } }, m.content);
+      else node = this.renderMd(shown, isStreamingMsg);
+      if (m.stopped) node = React.createElement('div', null, node, React.createElement('div', { style: { color: '#4d5a51', fontSize: 10, letterSpacing: 2, marginTop: 8, fontFamily: "'JetBrains Mono',monospace" } }, 'GENERATION STOPPED.'));
+      const isLastAssistant = !isUser && !m.error && i === s.messages.length - 1 && !isStreamingMsg && !s.thinking;
+      return {
+        label: isUser ? 'YOU' : 'Ø', labelColor: isUser ? '#4d5a51' : '#69FF94',
+        node,
+        showActions: isLastAssistant,
+        copyLabel: s.copied === i ? 'COPIED' : 'COPY',
+        copy: () => { navigator.clipboard.writeText(m.content); this.setState({ copied: i }); setTimeout(() => this.setState({ copied: -1 }), 1400); },
+        regen: this.regenerate,
+        showRetry: !!m.error && i === s.messages.length - 1,
+        retry: this.regenerate,
+      };
+    });
+    return {
+      isDesktop: s.phase === 'desktop', showWindow: !this.stateIsDesktop && s.phase !== 'desktop',
+      isBoot, isChat, isEmpty: isChat && s.messages.length === 0 && !s.thinking,
+      hasMessages: isChat && (s.messages.length > 0 || s.thinking),
+      winStyle, titleOpacity: isChat ? 1 : 0.25,
+      iconGlyph: this.glyph(44, 'dormant'),
+      readyGlyph: this.glyph(88, 'ready'),
+      thinkGlyph: this.glyph(22, 'thinking'),
+      bootLayer: this.bootLayer(),
+      messages, thinking: s.thinking, thinkLabel: s.thinkLabel,
+      launch: this.launch, skipBoot: this.skipBoot, toDesktop: this.toDesktop, toggleMax: this.toggleMax,
+      newConversation: this.newConversation,
+      sendOrStop: () => { (s.thinking || streaming) ? this.stopGen() : this.send(); },
+      sendIcon: (s.thinking || streaming) ? '■' : '↵',
+      sendTitle: (s.thinking || streaming) ? 'Stop (Esc)' : 'Send (Enter)',
+      statusLine: s.thinking ? 'REASONING' : streaming ? 'STREAMING' : 'READY',
+      promptRef: (el) => { this._prompt = el; },
+      promptKey: (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); }
+      },
+      promptInput: (e) => { const el = e.target; el.style.height = 'auto'; el.style.height = Math.min(160, el.scrollHeight) + 'px'; },
+      rootKey: () => {},
+    };
+  }
+}
+</script>
+</body>
+</html>

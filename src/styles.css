@@ -1,0 +1,100 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #050706;
+  overflow: hidden;
+}
+#root {
+  width: 100vw;
+  height: 100vh;
+}
+a {
+  color: #69ff94;
+}
+a:hover {
+  color: #a4ffc0;
+}
+::selection {
+  background: #275e38;
+  color: #e8eee9;
+}
+
+@keyframes oBlink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes oPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.92;
+  }
+  50% {
+    transform: scale(1.035);
+    opacity: 1;
+  }
+}
+@keyframes oSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes oFlick {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  40% {
+    opacity: 0.6;
+  }
+  60% {
+    opacity: 0.25;
+  }
+  80% {
+    opacity: 0.5;
+  }
+}
+
+#convo::-webkit-scrollbar {
+  width: 8px;
+}
+#convo::-webkit-scrollbar-thumb {
+  background: #1a241d;
+  border-radius: 4px;
+}
+#convo::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#prompt {
+  caret-color: #69ff94;
+}
+#prompt::placeholder {
+  color: #4d5a51;
+}
+
+/* Focus stays visible in the product's own language rather than a UA ring (§18). */
+:focus-visible {
+  outline: 1px solid #275e38;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

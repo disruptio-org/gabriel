@@ -1,0 +1,74 @@
+{
+  "name": "personal-intelligence",
+  "private": true,
+  "version": "1.0.0",
+  "productName": "Personal Intelligence",
+  "type": "module",
+  "description": "A button on your computer that summons an exceptional mind.",
+  "scripts": {
+    "dev": "concurrently -k -n ui,svc -c green,cyan \"vite\" \"node server/main.mjs\"",
+    "ui": "vite",
+    "svc": "node server/main.mjs",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "app": "npm run build && electron .",
+    "app:dev": "concurrently -k -n ui,app -c green,magenta \"vite\" \"wait-on http://127.0.0.1:5273 && cross-env PI_DEV_URL=http://127.0.0.1:5273 electron .\"",
+    "app:build": "npm run build && node scripts/build-installer.mjs",
+    "icon": "python scripts/make-icon.py"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "wait-on": "^9.1.0"
+  },
+  "main": "electron/main.mjs",
+  "build": {
+    "appId": "org.disruptio.personal-intelligence",
+    "productName": "Personal Intelligence",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "server/**",
+      "dist/**",
+      "package.json",
+      "build/icon.ico"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Personal Intelligence",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
+    }
+  },
+  "author": "Disruptio"
+}
