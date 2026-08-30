@@ -11,7 +11,13 @@
 import { hasKey, keyOf } from './providers.mjs'
 
 const PROVIDER = 'openai'
-const ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions'
+
+/**
+ * Overridable so the tests can point this at a local stub and read what
+ * actually goes on the wire - the same seam ANTHROPIC_BASE_URL gives the other
+ * provider. Nothing in the app sets it.
+ */
+export const baseUrl = () => process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'
 
 // Lower word error rate than whisper-1, and noticeably better on speech that
 // switches language mid-sentence.
@@ -50,7 +56,7 @@ export async function transcribe(audio, mimeType) {
 
   let res
   try {
-    res = await fetch(ENDPOINT, {
+    res = await fetch(`${baseUrl()}/audio/transcriptions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${keyOf(PROVIDER)}` },
       body: form,

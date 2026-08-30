@@ -18,7 +18,7 @@ import {
   setKeyEnv,
   providerHealth,
 } from './providers.mjs'
-import { transcribe, MAX_BYTES } from './voice.mjs'
+import { transcribe, baseUrl, MAX_BYTES } from './voice.mjs'
 
 // Minimal .env reader - avoids a dependency for one file of config.
 try {
@@ -106,7 +106,7 @@ async function verifyKey(provider, key) {
   // and one probe, which does not earn a second SDK in the bundle.
   let res
   try {
-    res = await fetch('https://api.openai.com/v1/models?limit=1', {
+    res = await fetch(`${baseUrl()}/models?limit=1`, {
       headers: { authorization: `Bearer ${key}` },
     })
   } catch (err) {
