@@ -16,6 +16,9 @@ export function Composer({
   onToggleDocs,
   voiceConnected,
   onConnectVoice,
+  voiceConsent,
+  onNeedVoiceConsent,
+  startVoiceSignal,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
   busy: boolean
@@ -30,6 +33,15 @@ export function Composer({
   /** Whether an OpenAI key is stored. Voice is the only thing it gates. */
   voiceConnected: boolean
   onConnectVoice: () => void
+  /** Whether the user has been told, once, where their recording goes. */
+  voiceConsent: boolean
+  onNeedVoiceConsent: () => void
+  /**
+   * Bumped by App when consent has just been given, so the click that raised
+   * the question is the click that starts recording - the user should not have
+   * to press the button twice.
+   */
+  startVoiceSignal: number
 }) {
   const [focused, setFocused] = useState(false)
   const [hoverSend, setHoverSend] = useState(false)
@@ -77,6 +89,9 @@ export function Composer({
 
   const startRecording = useCallback(async () => {
     if (!voiceConnected) return onConnectVoice()
+    // Asked before the microphone opens, never after: consent that arrives once
+    // the recording is already running is not consent.
+    if (!voiceConsent) return onNeedVoiceConsent()
     setVoiceError(null)
     try {
       recorderRef.current = await Recorder.open()
@@ -85,7 +100,7 @@ export function Composer({
       setVoiceError((err as VoiceFailure).message)
       setVoice('idle')
     }
-  }, [onConnectVoice, voiceConnected])
+  }, [onConnectVoice, onNeedVoiceConsent, voiceConnected, voiceConsent])
 
   const toggleVoice = useCallback(() => {
     if (voice === 'transcribing') return
@@ -111,6 +126,14 @@ export function Composer({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleVoice])
+
+  // Consent was just granted for the click that asked for it.
+  const firstSignal = useRef(startVoiceSignal)
+  useEffect(() => {
+    if (startVoiceSignal === firstSignal.current) return
+    firstSignal.current = startVoiceSignal
+    void startRecording()
+  }, [startRecording, startVoiceSignal])
 
   // A live microphone must not outlive the component that opened it.
   useEffect(() => () => recorderRef.current?.discard(), [])

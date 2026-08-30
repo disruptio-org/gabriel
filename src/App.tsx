@@ -4,9 +4,10 @@ import { Chat } from './components/Chat'
 import { Composer } from './components/Composer'
 import { Approval } from './components/Approval'
 import { Connection } from './components/Connection'
+import { VoiceConsent } from './components/VoiceConsent'
 import { Library } from './components/Library'
 import { Desktop } from './components/Desktop'
-import { effectiveMotion, loadConfig } from './config'
+import { effectiveMotion, loadConfig, saveConfig } from './config'
 import { checkHealth, streamChat, PRIMARY } from './lib/claude'
 import type { ProviderId, ProviderStatus } from './lib/claude'
 import { searchDocs, type Attachment, type DocHit } from './lib/docs'
@@ -66,7 +67,7 @@ function ChromeButton({
 }
 
 export default function App() {
-  const [config] = useState(loadConfig)
+  const [config, setConfig] = useState(loadConfig)
   const [phase, setPhase] = useState<Phase>('desktop')
   const [maxed, setMaxed] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
@@ -79,6 +80,10 @@ export default function App() {
   // Which provider the dialog opens on. Reaching for voice without a key should
   // land on the OpenAI tab, not on Claude's.
   const [connectionTab, setConnectionTab] = useState<ProviderId | null>(null)
+  const [askVoiceConsent, setAskVoiceConsent] = useState(false)
+  // Incremented once consent is granted, which tells the composer to start the
+  // recording the user already asked for.
+  const [startVoiceSignal, setStartVoiceSignal] = useState(0)
   const [showLibrary, setShowLibrary] = useState(false)
   // Consent is per send: this only decides whether the local search runs at all.
   const [useDocs, setUseDocs] = useState(true)
@@ -435,6 +440,9 @@ export default function App() {
                 onToggleDocs={() => setUseDocs((v) => !v)}
                 voiceConnected={providers?.openai?.connected ?? false}
                 onConnectVoice={() => setConnectionTab('openai')}
+                voiceConsent={config.voiceConsent}
+                onNeedVoiceConsent={() => setAskVoiceConsent(true)}
+                startVoiceSignal={startVoiceSignal}
                 status={thinking ? 'REASONING' : streamingId ? 'STREAMING' : 'READY'}
                 onSend={send}
                 onStop={stopGeneration}
@@ -456,6 +464,22 @@ export default function App() {
               }}
               onCancel={() => {
                 setPending(null)
+                focusPrompt()
+              }}
+            />
+          )}
+
+          {askVoiceConsent && (
+            <VoiceConsent
+              onAccept={() => {
+                const next = { ...config, voiceConsent: true }
+                setConfig(next)
+                saveConfig(next)
+                setAskVoiceConsent(false)
+                setStartVoiceSignal((n) => n + 1)
+              }}
+              onCancel={() => {
+                setAskVoiceConsent(false)
                 focusPrompt()
               }}
             />

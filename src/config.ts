@@ -6,6 +6,12 @@ export interface Config {
   userName: string
   model: string
   animationMode: AnimationMode
+  /**
+   * Whether the user has been told, once, that voice sends a recording to
+   * OpenAI - and agreed to it. Stored rather than asked every time, because a
+   * prompt shown on every use stops being read.
+   */
+  voiceConsent: boolean
 }
 
 const KEY = 'pi.config'
@@ -16,6 +22,8 @@ const DEFAULTS: Config = {
   // is the quality of the thinking, so it is the default. Overridable below.
   model: 'claude-opus-5',
   animationMode: 'full',
+  // Nobody has agreed to anything yet.
+  voiceConsent: false,
 }
 
 export function loadConfig(): Config {

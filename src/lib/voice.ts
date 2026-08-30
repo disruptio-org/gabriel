@@ -92,7 +92,11 @@ export class Recorder {
     return new Promise((resolve) => {
       this.recorder.onstop = () => {
         this.stream.getTracks().forEach((t) => t.stop())
-        resolve(new Blob(this.chunks, { type: this.mimeType }))
+        const audio = new Blob(this.chunks, { type: this.mimeType })
+        // Dropped here rather than left for the garbage collector to reach
+        // eventually: the recording exists for exactly as long as it is needed.
+        this.chunks = []
+        resolve(audio)
       }
       // Already inactive if the track ended under us; resolve rather than hang.
       if (this.recorder.state === 'inactive') this.recorder.onstop?.(new Event('stop'))
