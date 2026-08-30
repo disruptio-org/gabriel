@@ -7,10 +7,21 @@ interface StreamHandlers {
   onDone: () => void
 }
 
-export interface Health {
+/** Which provider a credential belongs to. Mirrors server/providers.mjs. */
+export type ProviderId = 'anthropic' | 'openai'
+
+/** The primary provider: without it there is no app, only a connect prompt. */
+export const PRIMARY: ProviderId = 'anthropic'
+
+export interface ProviderStatus {
+  label: string
   connected: boolean
   /** Last four characters of the stored key. Never the key itself (§16). */
   hint: string | null
+}
+
+export interface Health {
+  providers: Record<ProviderId, ProviderStatus>
   models: string[]
   default: string
 }
@@ -23,15 +34,15 @@ export interface KeyResult {
 }
 
 /**
- * Hands a key to the local service, which verifies it against Claude before
- * storing it. The key is never kept in renderer state beyond this call.
+ * Hands a key to the local service, which verifies it against that provider
+ * before storing it. The key is never kept in renderer state beyond this call.
  */
-export async function saveKey(key: string): Promise<KeyResult> {
+export async function saveKey(provider: ProviderId, key: string): Promise<KeyResult> {
   try {
     const res = await fetch('/api/key', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key }),
+      body: JSON.stringify({ provider, key }),
     })
     return (await res.json()) as KeyResult
   } catch {
@@ -39,9 +50,9 @@ export async function saveKey(key: string): Promise<KeyResult> {
   }
 }
 
-export async function clearKey(): Promise<void> {
+export async function clearKey(provider: ProviderId): Promise<void> {
   try {
-    await fetch('/api/key', { method: 'DELETE' })
+    await fetch(`/api/key?provider=${provider}`, { method: 'DELETE' })
   } catch {
     /* nothing to do - the UI refreshes from health either way */
   }

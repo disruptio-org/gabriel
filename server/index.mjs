@@ -1,13 +1,23 @@
 // Personal Intelligence - local application service.
 //
-// This is the only process that reads ANTHROPIC_API_KEY. The renderer talks to
-// it over loopback and receives model output as Server-Sent Events, so the
-// credential is never bundled into, or reachable from, browser code (§16).
+// This is the only process that reads the provider API keys (see
+// providers.mjs). The renderer talks to it over loopback and receives model
+// output as Server-Sent Events, so no credential is ever bundled into, or
+// reachable from, browser code (§16).
 import http from 'node:http'
 import { readFileSync, createReadStream, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { handleDocs, docsReady, resolveAttachments, initDocs } from './docs/routes.mjs'
+import {
+  PROVIDERS,
+  PRIMARY,
+  isProvider,
+  hasKey,
+  keyHint,
+  setKeyEnv,
+  providerHealth,
+} from './providers.mjs'
 
 // Minimal .env reader - avoids a dependency for one file of config.
 try {
@@ -66,72 +76,104 @@ function client() {
   return _client
 }
 
-const hasKey = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)
-
-/**
- * The last four characters, and nothing else. The UI needs to show *which* key
- * is stored without ever displaying it again after storage (§16).
- */
-const keyHint = () => {
-  const k = process.env.ANTHROPIC_API_KEY ?? ''
-  return k.length > 4 ? `•••• ${k.slice(-4)}` : null
-}
-
 // Supplied by whoever starts the service: the desktop shell encrypts through
-// the OS credential store, the standalone dev service writes .env.
+// the OS credential store, the standalone dev service writes .env. Called as
+// persistKey(provider, key), with null to remove.
 let persistKey = null
 
-/** Verifies a key by listing models - the cheapest authenticated call there is. */
-async function verifyKey(key) {
-  const probe = new Anthropic({ apiKey: key, maxRetries: 0 })
-  await probe.models.list({ limit: 1 })
+/**
+ * Confirms a key is live by listing models - the cheapest authenticated call
+ * either provider offers. Returns on success and throws otherwise, with
+ * `rejected` set on the error: true when the credential itself was refused,
+ * false when the provider could not be reached at all. Those two are different
+ * problems for the user, so they get different HTTP statuses.
+ */
+async function verifyKey(provider, key) {
+  if (provider === 'anthropic') {
+    const probe = new Anthropic({ apiKey: key, maxRetries: 0 })
+    try {
+      await probe.models.list({ limit: 1 })
+    } catch (err) {
+      throw Object.assign(err, { rejected: err instanceof Anthropic.AuthenticationError })
+    }
+    return
+  }
+
+  // OpenAI is reached with plain fetch: it is used for one multipart upload
+  // and one probe, which does not earn a second SDK in the bundle.
+  let res
+  try {
+    res = await fetch('https://api.openai.com/v1/models?limit=1', {
+      headers: { authorization: `Bearer ${key}` },
+    })
+  } catch (err) {
+    throw Object.assign(new Error(err.message), { rejected: false })
+  }
+  if (!res.ok) {
+    throw Object.assign(new Error(`openai responded ${res.status}`), {
+      rejected: res.status === 401 || res.status === 403,
+    })
+  }
+}
+
+/** Invalidates any cached client built on the provider's previous credential. */
+function credentialChanged(provider) {
+  if (provider === 'anthropic') _client = null
 }
 
 async function setKey(res, body) {
-  const key = typeof body.key === 'string' ? body.key.trim() : ''
   const json = (code, payload) => {
     res.writeHead(code, { 'content-type': 'application/json' })
     res.end(JSON.stringify(payload))
   }
 
-  if (!key.startsWith('sk-ant-')) {
-    return json(400, { ok: false, error: 'That does not look like an Anthropic API key.' })
-  }
+  // Absent for callers written before there was more than one provider.
+  const provider = body.provider ?? PRIMARY
+  if (!isProvider(provider)) return json(400, { ok: false, error: 'Unknown provider.' })
+
+  const spec = PROVIDERS[provider]
+  const key = typeof body.key === 'string' ? body.key.trim() : ''
+  if (!key.startsWith(spec.prefix)) return json(400, { ok: false, error: spec.rejection })
 
   try {
-    await verifyKey(key)
+    await verifyKey(provider, key)
   } catch (err) {
     // Deliberately never echoes the key back, and never logs it.
-    const rejected = err instanceof Anthropic.AuthenticationError
-    console.error('[svc] key check failed:', rejected ? 'rejected' : err.constructor.name)
-    return json(rejected ? 401 : 502, {
+    console.error(`[svc] ${provider} key check failed:`, err.rejected ? 'rejected' : err.message)
+    return json(err.rejected ? 401 : 502, {
       ok: false,
-      error: rejected ? 'Claude rejected that key.' : 'Could not reach Claude to check that key.',
+      error: err.rejected
+        ? `${spec.label} rejected that key.`
+        : `Could not reach ${spec.label} to check that key.`,
     })
   }
 
-  process.env.ANTHROPIC_API_KEY = key
-  _client = null // rebuild on next call, with the new credential
+  setKeyEnv(provider, key)
+  credentialChanged(provider)
 
   try {
-    if (persistKey) await persistKey(key)
+    if (persistKey) await persistKey(provider, key)
   } catch (err) {
     console.error('[svc] key stored for this session only:', err.message)
     return json(200, {
       ok: true,
-      hint: keyHint(),
+      hint: keyHint(provider),
       warning: 'Saved for this session, but it could not be written to storage.',
     })
   }
-  console.log('[svc] connection established')
-  return json(200, { ok: true, hint: keyHint() })
+  console.log(`[svc] ${provider} connection established`)
+  return json(200, { ok: true, hint: keyHint(provider) })
 }
 
-async function clearKey(res) {
-  delete process.env.ANTHROPIC_API_KEY
-  _client = null
+async function clearKey(res, provider) {
+  if (!isProvider(provider)) {
+    res.writeHead(400, { 'content-type': 'application/json' })
+    return res.end(JSON.stringify({ ok: false, error: 'Unknown provider.' }))
+  }
+  setKeyEnv(provider, null)
+  credentialChanged(provider)
   try {
-    if (persistKey) await persistKey(null)
+    if (persistKey) await persistKey(provider, null)
   } catch {
     /* the in-memory key is gone either way */
   }
@@ -155,7 +197,7 @@ function openStream(params, signal, withFallbacks) {
 }
 
 async function chat(req, res, body) {
-  if (!hasKey()) {
+  if (!hasKey(PRIMARY)) {
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     send(res, { type: 'error', kind: 'no_key', message: 'Ø needs a Claude connection.' })
     return res.end()
@@ -307,20 +349,24 @@ export async function startServer({
   // simply answers 503 and the rest of the app is unaffected.
   if (docsDir) await initDocs(docsDir, docsRoots)
   const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/api/health') {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+
+    if (req.method === 'GET' && url.pathname === '/api/health') {
       res.writeHead(200, { 'content-type': 'application/json' })
       return res.end(
         JSON.stringify({
-          connected: hasKey(),
-          hint: keyHint(),
+          // One entry per provider. Chat is gated on the primary one only:
+          // a missing OpenAI key disables voice and nothing else.
+          providers: providerHealth(),
           models: MODELS,
           default: DEFAULT_MODEL,
         }),
       )
     }
-    if (req.method === 'DELETE' && req.url === '/api/key') return void clearKey(res)
+    if (req.method === 'DELETE' && url.pathname === '/api/key') {
+      return void clearKey(res, url.searchParams.get('provider') ?? PRIMARY)
+    }
 
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const isDocs = url.pathname.startsWith('/api/docs/')
     if (isDocs && req.method === 'GET') {
       if (!docsReady()) return void res.writeHead(503).end()

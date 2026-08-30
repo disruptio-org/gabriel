@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { clearKey, saveKey } from '../lib/claude'
+import { clearKey, saveKey, PRIMARY } from '../lib/claude'
 import { c, ease, mono, sans } from '../theme'
 
 /**
@@ -42,7 +42,7 @@ export function Connection({
     setBusy(true)
     setError(null)
     setNote(null)
-    const res = await saveKey(key)
+    const res = await saveKey(PRIMARY, key)
     // Clear the field either way: a rejected key should not sit on screen.
     el.value = ''
     setBusy(false)
@@ -58,7 +58,7 @@ export function Connection({
 
   const disconnect = async () => {
     setBusy(true)
-    await clearKey()
+    await clearKey(PRIMARY)
     setBusy(false)
     setNote(null)
     onDone()

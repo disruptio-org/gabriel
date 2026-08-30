@@ -7,7 +7,7 @@ import { Connection } from './components/Connection'
 import { Library } from './components/Library'
 import { Desktop } from './components/Desktop'
 import { effectiveMotion, loadConfig } from './config'
-import { checkHealth, streamChat } from './lib/claude'
+import { checkHealth, streamChat, PRIMARY } from './lib/claude'
 import { searchDocs, type Attachment, type DocHit } from './lib/docs'
 import { isDesktopApp, shell } from './lib/shell'
 import { c, ease, mono } from './theme'
@@ -99,8 +99,11 @@ export default function App() {
 
   const refreshHealth = useCallback(async () => {
     const h = await checkHealth()
-    setConnected(h?.connected ?? false)
-    setKeyHint(h?.hint ?? null)
+    // Only the primary provider decides whether the app is usable; a second
+    // provider's credential gates its own feature, never the conversation.
+    const primary = h?.providers?.[PRIMARY]
+    setConnected(primary?.connected ?? false)
+    setKeyHint(primary?.hint ?? null)
   }, [])
 
   useEffect(() => {
