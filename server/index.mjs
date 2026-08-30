@@ -18,6 +18,7 @@ import {
   setKeyEnv,
   providerHealth,
 } from './providers.mjs'
+import { transcribe, MAX_BYTES } from './voice.mjs'
 
 // Minimal .env reader - avoids a dependency for one file of config.
 try {
@@ -371,6 +372,31 @@ export async function startServer({
     if (isDocs && req.method === 'GET') {
       if (!docsReady()) return void res.writeHead(503).end()
       return void handleDocs(req, res, url, null)
+    }
+
+    // Audio arrives as raw bytes rather than JSON, so it collects into buffers
+    // instead of a string - and is handed straight to the transcriber without
+    // ever reaching the filesystem.
+    if (req.method === 'POST' && url.pathname === '/api/transcribe') {
+      const chunks = []
+      let size = 0
+      req.on('data', (c) => {
+        size += c.length
+        // Past the cap the bytes are dropped rather than the socket, so the
+        // user gets a sentence explaining why instead of a dead connection.
+        if (size <= MAX_BYTES) chunks.push(c)
+      })
+      req.on('end', () => {
+        const audio = size > MAX_BYTES ? Buffer.alloc(MAX_BYTES + 1) : Buffer.concat(chunks)
+        const type = req.headers['content-type'] ?? 'audio/webm'
+        void transcribe(audio, type).then((result) => {
+          // Always 200: every outcome here is a result the renderer renders,
+          // not a transport failure. Chat's SSE errors follow the same rule.
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify(result))
+        })
+      })
+      return
     }
 
     if (req.method === 'POST' && (url.pathname === '/api/chat' || url.pathname === '/api/key' || isDocs)) {

@@ -76,6 +76,9 @@ export default function App() {
   const [connected, setConnected] = useState(true)
   const [providers, setProviders] = useState<Record<ProviderId, ProviderStatus> | null>(null)
   const [showConnection, setShowConnection] = useState(false)
+  // Which provider the dialog opens on. Reaching for voice without a key should
+  // land on the OpenAI tab, not on Claude's.
+  const [connectionTab, setConnectionTab] = useState<ProviderId | null>(null)
   const [showLibrary, setShowLibrary] = useState(false)
   // Consent is per send: this only decides whether the local search runs at all.
   const [useDocs, setUseDocs] = useState(true)
@@ -430,6 +433,8 @@ export default function App() {
                 onConnect={() => setShowConnection(true)}
                 docs={useDocs}
                 onToggleDocs={() => setUseDocs((v) => !v)}
+                voiceConnected={providers?.openai?.connected ?? false}
+                onConnectVoice={() => setConnectionTab('openai')}
                 status={thinking ? 'REASONING' : streamingId ? 'STREAMING' : 'READY'}
                 onSend={send}
                 onStop={stopGeneration}
@@ -458,12 +463,17 @@ export default function App() {
 
           {showLibrary && <Library onClose={() => setShowLibrary(false)} />}
 
-          {showConnection && (
+          {(showConnection || connectionTab) && (
             <Connection
               providers={providers}
-              onClose={() => setShowConnection(false)}
+              initial={connectionTab ?? PRIMARY}
+              onClose={() => {
+                setShowConnection(false)
+                setConnectionTab(null)
+              }}
               onDone={() => {
                 setShowConnection(false)
+                setConnectionTab(null)
                 void refreshHealth()
                 focusPrompt()
               }}

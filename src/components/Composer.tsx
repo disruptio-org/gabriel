@@ -1,4 +1,5 @@
-import { useState, type KeyboardEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
+import { Recorder, transcribe, type VoiceFailure } from '../lib/voice'
 import { c, mono } from '../theme'
 
 const MAX_HEIGHT = 160
@@ -13,6 +14,8 @@ export function Composer({
   onConnect,
   docs,
   onToggleDocs,
+  voiceConnected,
+  onConnectVoice,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
   busy: boolean
@@ -24,9 +27,17 @@ export function Composer({
   /** Whether a send searches the local library first. Consent is still per send. */
   docs: boolean
   onToggleDocs: () => void
+  /** Whether an OpenAI key is stored. Voice is the only thing it gates. */
+  voiceConnected: boolean
+  onConnectVoice: () => void
 }) {
   const [focused, setFocused] = useState(false)
   const [hoverSend, setHoverSend] = useState(false)
+  // idle -> recording -> transcribing -> idle. Kept here rather than in App
+  // because the transcript's destination is this component's textarea.
+  const [voice, setVoice] = useState<'idle' | 'recording' | 'transcribing'>('idle')
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const recorderRef = useRef<Recorder | null>(null)
 
   const submit = () => {
     const el = inputRef.current
@@ -37,6 +48,72 @@ export function Composer({
     el.style.height = 'auto'
     onSend(text)
   }
+
+  /** Puts transcribed text where the user is typing, without sending it. */
+  const insert = (text: string) => {
+    const el = inputRef.current
+    if (!el) return
+    const existing = el.value
+    el.value = existing ? `${existing.replace(/\s+$/, '')} ${text}` : text
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(MAX_HEIGHT, el.scrollHeight)}px`
+    el.focus()
+    // Caret at the end, so the next thing typed continues the sentence.
+    el.setSelectionRange(el.value.length, el.value.length)
+  }
+
+  const stopRecording = useCallback(async () => {
+    const rec = recorderRef.current
+    if (!rec) return
+    recorderRef.current = null
+    setVoice('transcribing')
+    const audio = await rec.stop()
+    const result = await transcribe(audio)
+    setVoice('idle')
+    if (result.ok) insert(result.text)
+    else setVoiceError(result.message)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const startRecording = useCallback(async () => {
+    if (!voiceConnected) return onConnectVoice()
+    setVoiceError(null)
+    try {
+      recorderRef.current = await Recorder.open()
+      setVoice('recording')
+    } catch (err) {
+      setVoiceError((err as VoiceFailure).message)
+      setVoice('idle')
+    }
+  }, [onConnectVoice, voiceConnected])
+
+  const toggleVoice = useCallback(() => {
+    if (voice === 'transcribing') return
+    if (voice === 'recording') void stopRecording()
+    else void startRecording()
+  }, [startRecording, stopRecording, voice])
+
+  // Ctrl+Space is the keyboard equivalent of the button, and Escape abandons a
+  // recording rather than transcribing it - stopping is not the same as
+  // cancelling, and the user needs both.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.code === 'Space') {
+        e.preventDefault()
+        toggleVoice()
+      }
+      if (e.key === 'Escape' && recorderRef.current) {
+        recorderRef.current.discard()
+        recorderRef.current = null
+        setVoice('idle')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toggleVoice])
+
+  // A live microphone must not outlive the component that opened it.
+  useEffect(() => () => recorderRef.current?.discard(), [])
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -92,6 +169,12 @@ export function Composer({
           }}
         />
 
+        <MicButton
+          state={voice}
+          connected={voiceConnected}
+          onClick={toggleVoice}
+        />
+
         <button
           type="button"
           onClick={() => (busy ? onStop() : submit())}
@@ -129,10 +212,23 @@ export function Composer({
           gap: 16,
         }}
       >
-        {connected ? (
+        {voiceError ? (
+          // Replaces the shortcut hints rather than joining them: a failed
+          // recording is the only thing worth reading at that moment.
+          <span
+            role="alert"
+            style={{ color: c.warm, fontSize: 9.5, letterSpacing: 1.5, fontFamily: mono }}
+          >
+            {voiceError.toUpperCase()}
+          </span>
+        ) : connected ? (
           <span style={{ display: 'flex', gap: 14, alignItems: 'baseline' }}>
             <span style={{ color: c.ghost, fontSize: 9.5, letterSpacing: 1.5, fontFamily: mono }}>
-              ENTER SEND · SHIFT+ENTER NEWLINE · ESC STOP
+              {voice === 'recording'
+                ? 'RECORDING · CTRL+SPACE STOP · ESC DISCARD'
+                : voice === 'transcribing'
+                  ? 'TRANSCRIBING'
+                  : 'ENTER SEND · SHIFT+ENTER NEWLINE · ESC STOP'}
             </span>
             {/* Turning this off skips the local search entirely - no passages
                 are found, so none can be offered. */}
@@ -191,5 +287,68 @@ export function Composer({
         </span>
       </div>
     </div>
+  )
+}
+
+/**
+ * The microphone. Recording is a state the user is *in*, so it is unmistakable
+ * at rest: a filled dot in the accent colour, and the footer says so in words.
+ *
+ * Without an OpenAI key the button stays visible but inert - it explains what
+ * is missing on hover and opens the connection dialog, which is more useful
+ * than hiding the feature and leaving the user to wonder whether it exists.
+ */
+function MicButton({
+  state,
+  connected,
+  onClick,
+}: {
+  state: 'idle' | 'recording' | 'transcribing'
+  connected: boolean
+  onClick: () => void
+}) {
+  const [hover, setHover] = useState(false)
+  const recording = state === 'recording'
+  const working = state === 'transcribing'
+
+  const title = !connected
+    ? 'Voice needs an OpenAI connection — click to add one'
+    : recording
+      ? 'Stop and transcribe (Ctrl+Space) · Esc discards'
+      : 'Speak instead of typing (Ctrl+Space)'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      disabled={working}
+      title={title}
+      aria-label={title}
+      aria-pressed={recording}
+      style={{
+        flex: '0 0 auto',
+        width: 26,
+        height: 26,
+        padding: 0,
+        borderRadius: 5,
+        border: 'none',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: working ? 'default' : 'pointer',
+        color: recording ? c.accent : !connected ? c.ghost : hover ? c.accent : c.faint,
+        background: recording || hover ? 'rgba(105,255,148,0.07)' : 'transparent',
+        fontSize: 12,
+        fontFamily: mono,
+        // Reduced motion is honoured globally in styles.css; this is the only
+        // pulse in the composer and it exists to make a live microphone
+        // impossible to miss.
+        animation: recording ? 'oPulse 1.6s ease-in-out infinite' : undefined,
+      }}
+    >
+      {working ? '⋯' : recording ? '●' : '◉'}
+    </button>
   )
 }

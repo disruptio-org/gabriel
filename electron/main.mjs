@@ -5,7 +5,7 @@
 // bridge. The renderer is served over loopback by the same process that holds
 // the API keys, so relative /api fetches work exactly as they do under Vite and
 // no credential ever crosses into renderer code (§16).
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, rmSync } from 'node:fs'
@@ -100,6 +100,20 @@ async function createWindow() {
       sandbox: true,
     },
   })
+
+  // Without this, getUserMedia is refused with no prompt and no error the
+  // renderer can distinguish from a hardware failure - and only in the packaged
+  // app, because under Vite the page runs in a browser that asks the user
+  // itself. Microphone access is granted because the user asked for voice by
+  // pressing the button; everything else Chromium might request is refused.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media' || permission === 'audioCapture')
+  })
+  // The synchronous twin of the handler above, consulted for getUserMedia on
+  // some paths. Answering only one of the two leaves the failure intermittent.
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) =>
+    permission === 'media' || permission === 'audioCapture',
+  )
 
   win.removeMenu()
   win.once('ready-to-show', () => win.show())
