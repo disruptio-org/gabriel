@@ -5,8 +5,12 @@ import { tokenize } from './index.mjs'
 const K1 = 1.5
 const B = 0.75
 
-/** Standard BM25. Rare terms count for more; long documents are not rewarded for length. */
-function score(index, terms) {
+/**
+ * Standard BM25. Rare terms count for more; long documents are not rewarded for
+ * length. Asynchronous because each term's posting list is read from disk on
+ * demand - the index is not held in memory.
+ */
+async function score(index, terms) {
   const N = index.docs.size
   if (N === 0) return []
   let avgLen = 0
@@ -15,9 +19,9 @@ function score(index, terms) {
 
   const totals = new Map()
   for (const term of terms) {
-    const list = index.postings.get(term)
-    if (!list) continue
-    const idf = Math.log(1 + (N - list.size + 0.5) / (list.size + 0.5))
+    const list = await index.lookup(term)
+    if (list.length === 0) continue
+    const idf = Math.log(1 + (N - list.length + 0.5) / (list.length + 0.5))
     for (const [id, tf] of list) {
       const doc = index.docs.get(id)
       if (!doc) continue
@@ -83,8 +87,7 @@ export async function search(index, query, { limit = 8, passages = true } = {}) 
   const terms = [...new Set(tokenize(query))]
   if (terms.length === 0) return { terms, results: [] }
 
-  await index.ensurePostings()
-  const ranked = score(index, terms).slice(0, limit)
+  const ranked = (await score(index, terms)).slice(0, limit)
 
   const results = []
   for (const [id, s] of ranked) {
