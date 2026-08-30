@@ -84,6 +84,11 @@ export default function App() {
   // Incremented once consent is granted, which tells the composer to start the
   // recording the user already asked for.
   const [startVoiceSignal, setStartVoiceSignal] = useState(0)
+  // Hands-free and DOCS are mutually exclusive: the approval sheet needs someone
+  // at the keyboard to tick passages, and hands-free is defined by there not
+  // being one. Rather than let one silently weaken the other, each turns the
+  // other off, visibly.
+  const [handsFree, setHandsFree] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
   // Consent is per send: this only decides whether the local search runs at all.
   const [useDocs, setUseDocs] = useState(true)
@@ -91,6 +96,13 @@ export default function App() {
     null,
   )
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight })
+
+  /**
+   * Whether this send searches the library at all. Derived rather than stored,
+   * so the footer and the send path cannot disagree - if the composer says DOCS
+   * OFF, no search runs, which is the whole promise of the exclusion.
+   */
+  const docsActive = useDocs && !handsFree
 
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const convoRef = useRef<HTMLDivElement | null>(null)
@@ -218,7 +230,7 @@ export default function App() {
   const send = useCallback(
     async (text: string) => {
       const next: Message[] = [...messages, { id: uid(), role: 'user', content: text }]
-      if (useDocs) {
+      if (docsActive) {
         const hits = (await searchDocs(text, 5)).filter((h) => h.passage && h.passage.hits > 0)
         if (hits.length > 0) {
           setPending({ text, next, hits })
@@ -229,7 +241,7 @@ export default function App() {
       generate(next)
       scrollBottom()
     },
-    [generate, messages, scrollBottom, useDocs],
+    [docsActive, generate, messages, scrollBottom],
   )
 
   /** Drops trailing assistant turns and re-runs from the last user message. */
@@ -301,7 +313,12 @@ export default function App() {
   useEffect(() => {
     if (phase !== 'chat') return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') stopGeneration()
+      if (e.key === 'Escape') {
+        stopGeneration()
+        // Escape means "stop what is happening", and in hands-free the thing
+        // happening includes the app's intention to listen again.
+        setHandsFree(false)
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault()
         newConversation()
@@ -436,8 +453,13 @@ export default function App() {
                 busy={busy}
                 connected={connected}
                 onConnect={() => setShowConnection(true)}
-                docs={useDocs}
-                onToggleDocs={() => setUseDocs((v) => !v)}
+                docs={docsActive}
+                onToggleDocs={() => {
+                  setUseDocs((v) => !v)
+                  setHandsFree(false)
+                }}
+                handsFree={handsFree}
+                onToggleHandsFree={() => setHandsFree((v) => !v)}
                 voiceConnected={providers?.openai?.connected ?? false}
                 onConnectVoice={() => setConnectionTab('openai')}
                 voiceConsent={config.voiceConsent}

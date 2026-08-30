@@ -25,6 +25,29 @@ export interface VoiceFailure {
 }
 export type TranscriptResult = { ok: true; text: string } | VoiceFailure
 
+/**
+ * Turn-taking thresholds for hands-free listening.
+ *
+ * SILENCE_MS is the one the user feels: too short and it cuts in on a pause for
+ * thought, too long and the conversation drags. 1.2s sits above a natural
+ * mid-sentence pause and below the point where waiting feels broken.
+ */
+const SILENCE_MS = 1200
+/** A runaway guard, not a feature limit - a noisy room must not record forever. */
+const MAX_MS = 60_000
+/** Below this there is no sentence, only a cough. Discarded without a request. */
+export const MIN_SPEECH_MS = 400
+
+/**
+ * Ambient noise varies by room, so the threshold is calibrated rather than
+ * fixed: the first moments are taken as the noise floor and speech has to rise
+ * meaningfully above it. The constant floor stops a silent room from making the
+ * threshold so low that the fan counts as talking.
+ */
+const CALIBRATION_MS = 350
+const MIN_THRESHOLD = 0.012
+const NOISE_MULTIPLE = 2.5
+
 /** Ordered by preference; the first the browser admits to supporting wins. */
 const CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
 
@@ -44,6 +67,10 @@ export class Recorder {
   private recorder: MediaRecorder
   private stream: MediaStream
   private chunks: Blob[] = []
+  private audioCtx: AudioContext | null = null
+  private vadTimer: number | null = null
+  /** Milliseconds of audio above the threshold, so a cough can be told from a sentence. */
+  private spokeMs = 0
   readonly mimeType: string
 
   private constructor(stream: MediaStream, mimeType: string) {
@@ -54,6 +81,76 @@ export class Recorder {
       if (e.data.size > 0) this.chunks.push(e.data)
     }
     this.recorder.start()
+  }
+
+  /** Whether enough speech was heard to be worth transcribing. */
+  get heardSpeech(): boolean {
+    return this.spokeMs >= MIN_SPEECH_MS
+  }
+
+  /**
+   * Watches the signal and calls back when the speaker has finished - a stretch
+   * of silence after something was actually said, or the hard cap.
+   *
+   * Only hands-free mode uses this. When the user is driving the button, they
+   * decide when the turn ends, and guessing on their behalf would take that
+   * away.
+   */
+  listenForTurnEnd(onTurnEnd: () => void): void {
+    const ctx = new AudioContext()
+    this.audioCtx = ctx
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 1024
+    ctx.createMediaStreamSource(this.stream).connect(analyser)
+
+    const samples = new Float32Array(analyser.fftSize)
+    const TICK = 50
+    let elapsed = 0
+    let silentFor = 0
+    let noiseFloor = 0
+    let calibrationTicks = 0
+    let done = false
+
+    const finish = () => {
+      if (done) return
+      done = true
+      this.stopListening()
+      onTurnEnd()
+    }
+
+    this.vadTimer = window.setInterval(() => {
+      analyser.getFloatTimeDomainData(samples)
+      let sum = 0
+      for (const v of samples) sum += v * v
+      const rms = Math.sqrt(sum / samples.length)
+
+      elapsed += TICK
+      if (elapsed <= CALIBRATION_MS) {
+        // Rolling mean of the room before anyone has spoken.
+        calibrationTicks += 1
+        noiseFloor += (rms - noiseFloor) / calibrationTicks
+        return
+      }
+
+      const threshold = Math.max(MIN_THRESHOLD, noiseFloor * NOISE_MULTIPLE)
+      if (rms >= threshold) {
+        this.spokeMs += TICK
+        silentFor = 0
+      } else if (this.spokeMs > 0) {
+        // Silence only counts once there is something for it to follow.
+        silentFor += TICK
+        if (silentFor >= SILENCE_MS) return finish()
+      }
+
+      if (elapsed >= MAX_MS) return finish()
+    }, TICK)
+  }
+
+  private stopListening(): void {
+    if (this.vadTimer !== null) window.clearInterval(this.vadTimer)
+    this.vadTimer = null
+    void this.audioCtx?.close()
+    this.audioCtx = null
   }
 
   /**
@@ -89,6 +186,7 @@ export class Recorder {
 
   /** Stops, releases the microphone, and resolves with what was captured. */
   stop(): Promise<Blob> {
+    this.stopListening()
     return new Promise((resolve) => {
       this.recorder.onstop = () => {
         this.stream.getTracks().forEach((t) => t.stop())
@@ -106,6 +204,7 @@ export class Recorder {
 
   /** Abandons the recording without transcribing it. */
   discard(): void {
+    this.stopListening()
     this.recorder.onstop = null
     if (this.recorder.state !== 'inactive') this.recorder.stop()
     this.stream.getTracks().forEach((t) => t.stop())

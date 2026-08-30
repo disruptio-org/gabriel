@@ -19,6 +19,8 @@ export function Composer({
   voiceConsent,
   onNeedVoiceConsent,
   startVoiceSignal,
+  handsFree,
+  onToggleHandsFree,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
   busy: boolean
@@ -42,6 +44,9 @@ export function Composer({
    * to press the button twice.
    */
   startVoiceSignal: number
+  /** Hands-free: the turn ends itself and sends. Mutually exclusive with DOCS. */
+  handsFree: boolean
+  onToggleHandsFree: () => void
 }) {
   const [focused, setFocused] = useState(false)
   const [hoverSend, setHoverSend] = useState(false)
@@ -74,16 +79,42 @@ export function Composer({
     el.setSelectionRange(el.value.length, el.value.length)
   }
 
+  // Read inside callbacks that outlive the render which created them - the VAD
+  // fires on a timer and must see the mode as it is now, not as it was.
+  const handsFreeRef = useRef(handsFree)
+  handsFreeRef.current = handsFree
+  const sendRef = useRef(onSend)
+  sendRef.current = onSend
+
   const stopRecording = useCallback(async () => {
     const rec = recorderRef.current
     if (!rec) return
     recorderRef.current = null
+    const auto = handsFreeRef.current
+    // Too short to be a sentence. In hands-free this happens on a cough or a
+    // door, and the right response is to keep listening rather than to explain.
+    if (auto && !rec.heardSpeech) {
+      rec.discard()
+      setVoice('idle')
+      return void startRef.current?.()
+    }
     setVoice('transcribing')
     const audio = await rec.stop()
     const result = await transcribe(audio)
     setVoice('idle')
-    if (result.ok) insert(result.text)
-    else setVoiceError(result.message)
+
+    if (!result.ok) {
+      // Silence in hands-free is not worth a message; anything else is, and it
+      // stops the loop rather than retrying into the same failure.
+      if (!(auto && result.kind === 'empty')) setVoiceError(result.message)
+      if (auto && result.kind === 'empty') void startRef.current?.()
+      return
+    }
+    // The whole difference between the two modes: hands-free commits the
+    // sentence, dictation hands it back for the user to approve by pressing
+    // Enter.
+    if (auto) sendRef.current(result.text)
+    else insert(result.text)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -92,15 +123,24 @@ export function Composer({
     // Asked before the microphone opens, never after: consent that arrives once
     // the recording is already running is not consent.
     if (!voiceConsent) return onNeedVoiceConsent()
+    if (recorderRef.current) return
     setVoiceError(null)
     try {
-      recorderRef.current = await Recorder.open()
+      const rec = await Recorder.open()
+      recorderRef.current = rec
       setVoice('recording')
+      // In hands-free the turn ends itself; with the button, the user ends it.
+      if (handsFreeRef.current) rec.listenForTurnEnd(() => void stopRecording())
     } catch (err) {
       setVoiceError((err as VoiceFailure).message)
       setVoice('idle')
     }
-  }, [onConnectVoice, onNeedVoiceConsent, voiceConnected, voiceConsent])
+  }, [onConnectVoice, onNeedVoiceConsent, stopRecording, voiceConnected, voiceConsent])
+
+  // Lets stopRecording restart the loop without the two callbacks depending on
+  // each other in a cycle.
+  const startRef = useRef<(() => void) | null>(null)
+  startRef.current = () => void startRecording()
 
   const toggleVoice = useCallback(() => {
     if (voice === 'transcribing') return
@@ -134,6 +174,29 @@ export function Composer({
     firstSignal.current = startVoiceSignal
     void startRecording()
   }, [startRecording, startVoiceSignal])
+
+  // Reopen the microphone when Ø has finished answering: that is what makes it
+  // a conversation rather than a series of dictations. Guarded on handsFree so
+  // an ordinary typed turn never opens the microphone behind the user's back.
+  const wasBusy = useRef(busy)
+  useEffect(() => {
+    const finished = wasBusy.current && !busy
+    wasBusy.current = busy
+    if (finished && handsFree && voice === 'idle') void startRecording()
+  }, [busy, handsFree, startRecording, voice])
+
+  // Leaving hands-free closes the microphone it opened. Without this, turning
+  // the mode off mid-listen would leave a live recording with nothing driving
+  // it - the one state where the indicator would be lying.
+  useEffect(() => {
+    if (handsFree) return
+    const rec = recorderRef.current
+    if (rec && voice === 'recording') {
+      rec.discard()
+      recorderRef.current = null
+      setVoice('idle')
+    }
+  }, [handsFree, voice])
 
   // A live microphone must not outlive the component that opened it.
   useEffect(() => () => recorderRef.current?.discard(), [])
@@ -258,23 +321,56 @@ export function Composer({
             <button
               type="button"
               onClick={onToggleDocs}
+              disabled={handsFree}
               title={
-                docs
-                  ? 'Ø checks your local library and asks before sending anything from it (Ctrl+D to browse)'
-                  : 'Ø ignores your documents entirely'
+                handsFree
+                  ? 'Documents need approval at the keyboard, which hands-free does not have'
+                  : docs
+                    ? 'Ø checks your local library and asks before sending anything from it (Ctrl+D to browse)'
+                    : 'Ø ignores your documents entirely'
               }
               style={{
                 background: 'none',
                 border: 'none',
                 padding: 0,
-                cursor: 'pointer',
+                cursor: handsFree ? 'not-allowed' : 'pointer',
                 fontFamily: mono,
                 fontSize: 9.5,
                 letterSpacing: 1.5,
-                color: docs ? c.dim : c.ghost,
+                color: handsFree ? c.ghost : docs ? c.dim : c.ghost,
+                opacity: handsFree ? 0.45 : 1,
               }}
             >
-              {docs ? 'DOCS ON' : 'DOCS OFF'}
+              {handsFree ? 'DOCS OFF' : docs ? 'DOCS ON' : 'DOCS OFF'}
+            </button>
+
+            {/* Hands-free is a mode in which the app records and sends without
+                the user touching anything, so its state is legible at rest
+                rather than only while it is doing something. */}
+            <button
+              type="button"
+              onClick={onToggleHandsFree}
+              disabled={!voiceConnected}
+              title={
+                !voiceConnected
+                  ? 'Voice needs an OpenAI connection'
+                  : handsFree
+                    ? 'Ø listens, sends when you stop speaking, and listens again (Esc to leave)'
+                    : 'Speak and Ø answers without you pressing anything — turns DOCS off'
+              }
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                cursor: voiceConnected ? 'pointer' : 'not-allowed',
+                fontFamily: mono,
+                fontSize: 9.5,
+                letterSpacing: 1.5,
+                color: handsFree ? c.accent : c.ghost,
+                opacity: voiceConnected ? 1 : 0.45,
+              }}
+            >
+              {handsFree ? 'VOICE ON' : 'VOICE OFF'}
             </button>
           </span>
         ) : (
