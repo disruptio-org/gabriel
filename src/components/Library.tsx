@@ -292,6 +292,24 @@ function Roots({
 }) {
   return (
     <div style={{ padding: '16px 24px' }}>
+      {status && status.documents === 0 && !status.building && (
+        // Nothing is indexed until it is asked for, so the first run has to say
+        // so out loud - otherwise the library looks broken and Ø looks like it
+        // cannot read anything.
+        <p
+          style={{
+            color: c.accent,
+            fontFamily: sans,
+            fontSize: 13.5,
+            lineHeight: 1.7,
+            margin: '0 0 16px',
+          }}
+        >
+          Nothing is indexed yet. Choose <strong>REINDEX</strong> below to read the folders listed
+          here. It runs entirely on this machine, and a first pass over a large disk takes a while.
+        </p>
+      )}
+
       <p style={{ color: c.faint, fontFamily: sans, fontSize: 13, lineHeight: 1.7, margin: 0 }}>
         Ø indexes these folders. Credential-shaped files (<code>.env</code>, keys, certificates)
         and machine folders like <code>node_modules</code> are never indexed.
