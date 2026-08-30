@@ -5,17 +5,42 @@
 // bridge. The renderer is served over loopback by the same process that holds
 // the API key, so relative /api fetches work exactly as they do under Vite and
 // the credential never crosses into renderer code (§16).
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { startServer } from '../server/index.mjs'
+import { defaultRoots } from '../server/docs/roots.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
 // The installed app cannot read the repo's .env, and the key must never be
 // packaged into the installer. An installed build reads it from the per-user
 // config file instead: %APPDATA%/Personal Intelligence/.env
+// The credential at rest, encrypted by the OS (DPAPI on Windows) rather than
+// left in a readable file - requirements §16 asks for the platform's own
+// credential mechanism where one exists.
+const vaultFile = () => join(app.getPath('userData'), 'credential.bin')
+
+function loadStoredKey() {
+  if (!safeStorage.isEncryptionAvailable()) return
+  try {
+    const key = safeStorage.decryptString(readFileSync(vaultFile()))
+    if (key) process.env.ANTHROPIC_API_KEY = key
+  } catch {
+    /* nothing stored yet, or it was written by another OS user */
+  }
+}
+
+/** Handed to the service, which calls it once a key has been verified. */
+function persistKey(key) {
+  if (key === null) return void rmSync(vaultFile(), { force: true })
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('OS credential storage unavailable')
+  }
+  writeFileSync(vaultFile(), safeStorage.encryptString(key), { mode: 0o600 })
+}
+
 function loadUserEnv() {
   try {
     const file = join(app.getPath('userData'), '.env')
@@ -37,7 +62,15 @@ let win = null
 
 async function createWindow() {
   // port 0: let the OS pick a free port, so a stale service never blocks launch.
-  const { port } = DEV_URL ? { port: null } : await startServer({ port: 0, staticDir: join(here, '..', 'dist') })
+  const { port } = DEV_URL
+    ? { port: null }
+    : await startServer({
+        port: 0,
+        staticDir: join(here, '..', 'dist'),
+        persist: persistKey,
+        docsDir: join(app.getPath('userData'), 'index'),
+        docsRoots: defaultRoots(),
+      })
 
   win = new BrowserWindow({
     ...LAUNCHER,
@@ -94,6 +127,9 @@ ipcMain.handle('pi:phase', (_e, phase) => {
 })
 
 app.whenReady().then(() => {
+  // Encrypted store first; the plain .env stays as a fallback for a machine
+  // where safeStorage is unavailable, and for seeding a fresh install.
+  loadStoredKey()
   loadUserEnv()
   return createWindow()
 })

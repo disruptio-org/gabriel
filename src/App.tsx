@@ -2,9 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Boot } from './components/Boot'
 import { Chat } from './components/Chat'
 import { Composer } from './components/Composer'
+import { Approval } from './components/Approval'
+import { Connection } from './components/Connection'
+import { Library } from './components/Library'
 import { Desktop } from './components/Desktop'
 import { effectiveMotion, loadConfig } from './config'
 import { checkHealth, streamChat } from './lib/claude'
+import { searchDocs, type Attachment, type DocHit } from './lib/docs'
 import { isDesktopApp, shell } from './lib/shell'
 import { c, ease, mono } from './theme'
 import type { Message, Phase } from './types'
@@ -69,6 +73,14 @@ export default function App() {
   const [thinkLabel, setThinkLabel] = useState(THINK_LABELS[0]!)
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const [connected, setConnected] = useState(true)
+  const [keyHint, setKeyHint] = useState<string | null>(null)
+  const [showConnection, setShowConnection] = useState(false)
+  const [showLibrary, setShowLibrary] = useState(false)
+  // Consent is per send: this only decides whether the local search runs at all.
+  const [useDocs, setUseDocs] = useState(true)
+  const [pending, setPending] = useState<{ text: string; next: Message[]; hits: DocHit[] } | null>(
+    null,
+  )
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight })
 
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
@@ -85,9 +97,15 @@ export default function App() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  useEffect(() => {
-    void checkHealth().then((h) => setConnected(h?.connected ?? false))
+  const refreshHealth = useCallback(async () => {
+    const h = await checkHealth()
+    setConnected(h?.connected ?? false)
+    setKeyHint(h?.hint ?? null)
   }, [])
+
+  useEffect(() => {
+    void refreshHealth()
+  }, [refreshHealth])
 
   const focusPrompt = useCallback(() => {
     window.setTimeout(() => promptRef.current?.focus(), 350)
@@ -121,7 +139,7 @@ export default function App() {
   }, [stopLabels])
 
   const generate = useCallback(
-    (history: Message[]) => {
+    (history: Message[], attachments: Attachment[] = []) => {
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
@@ -139,7 +157,7 @@ export default function App() {
       // gives way the instant real output arrives - never on a timer.
       let assistantId: string | null = null
 
-      void streamChat(history, config.model, controller.signal, {
+      void streamChat(history, config.model, controller.signal, attachments, {
         onDelta: (text) => {
           if (assistantId === null) {
             assistantId = uid()
@@ -180,14 +198,27 @@ export default function App() {
     [config.model, scrollBottom, stopLabels],
   )
 
+  /**
+   * A send is a two-step act when the local library has something to say about
+   * the question: search happens on this machine, and the passages it finds are
+   * shown for approval before any of them travel. Answering "no" still sends
+   * the question - only the document text is withheld.
+   */
   const send = useCallback(
-    (text: string) => {
+    async (text: string) => {
       const next: Message[] = [...messages, { id: uid(), role: 'user', content: text }]
+      if (useDocs) {
+        const hits = (await searchDocs(text, 5)).filter((h) => h.passage && h.passage.hits > 0)
+        if (hits.length > 0) {
+          setPending({ text, next, hits })
+          return
+        }
+      }
       setMessages(next)
       generate(next)
       scrollBottom()
     },
-    [generate, messages, scrollBottom],
+    [generate, messages, scrollBottom, useDocs],
   )
 
   /** Drops trailing assistant turns and re-runs from the last user message. */
@@ -263,6 +294,14 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault()
         newConversation()
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setShowConnection(true)
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+        e.preventDefault()
+        setShowLibrary(true)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -379,16 +418,53 @@ export default function App() {
                 streamingId={streamingId}
                 convoRef={convoRef}
                 onRegenerate={regenerate}
+                onConnect={() => setShowConnection(true)}
               />
               <Composer
                 inputRef={promptRef}
                 busy={busy}
                 connected={connected}
+                onConnect={() => setShowConnection(true)}
+                docs={useDocs}
+                onToggleDocs={() => setUseDocs((v) => !v)}
                 status={thinking ? 'REASONING' : streamingId ? 'STREAMING' : 'READY'}
                 onSend={send}
                 onStop={stopGeneration}
               />
             </>
+          )}
+
+          {pending && (
+            <Approval
+              question={pending.text}
+              hits={pending.hits}
+              onSend={(attachments) => {
+                const { next } = pending
+                setPending(null)
+                setMessages(next)
+                generate(next, attachments)
+                scrollBottom()
+                focusPrompt()
+              }}
+              onCancel={() => {
+                setPending(null)
+                focusPrompt()
+              }}
+            />
+          )}
+
+          {showLibrary && <Library onClose={() => setShowLibrary(false)} />}
+
+          {showConnection && (
+            <Connection
+              hint={keyHint}
+              onClose={() => setShowConnection(false)}
+              onDone={() => {
+                setShowConnection(false)
+                void refreshHealth()
+                focusPrompt()
+              }}
+            />
           )}
         </div>
       )}

@@ -7,6 +7,7 @@ import http from 'node:http'
 import { readFileSync, createReadStream, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
+import { handleDocs, docsReady, resolveAttachments, initDocs } from './docs/routes.mjs'
 
 // Minimal .env reader - avoids a dependency for one file of config.
 try {
@@ -42,6 +43,8 @@ Be imaginative and unconventional where it helps, but never invent facts to make
 
 When you have enough information, give a concrete recommendation. If one missing fact would materially change the answer, ask a single focused question instead of hedging across every branch.
 
+When the turn carries <document> blocks, they are passages the user has explicitly chosen to share from files on their own computer. Ground your answer in them and name the file you are drawing on. If they do not contain the answer, say so plainly rather than inferring one - and never claim to have read a file you were not given.
+
 Write in clean, concise Markdown. No filler, no flattery, no restating the question back.`
 
 // Built on first use, not at import: the desktop shell loads the per-user .env
@@ -60,6 +63,77 @@ function client() {
 }
 
 const hasKey = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)
+
+/**
+ * The last four characters, and nothing else. The UI needs to show *which* key
+ * is stored without ever displaying it again after storage (§16).
+ */
+const keyHint = () => {
+  const k = process.env.ANTHROPIC_API_KEY ?? ''
+  return k.length > 4 ? `•••• ${k.slice(-4)}` : null
+}
+
+// Supplied by whoever starts the service: the desktop shell encrypts through
+// the OS credential store, the standalone dev service writes .env.
+let persistKey = null
+
+/** Verifies a key by listing models - the cheapest authenticated call there is. */
+async function verifyKey(key) {
+  const probe = new Anthropic({ apiKey: key, maxRetries: 0 })
+  await probe.models.list({ limit: 1 })
+}
+
+async function setKey(res, body) {
+  const key = typeof body.key === 'string' ? body.key.trim() : ''
+  const json = (code, payload) => {
+    res.writeHead(code, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(payload))
+  }
+
+  if (!key.startsWith('sk-ant-')) {
+    return json(400, { ok: false, error: 'That does not look like an Anthropic API key.' })
+  }
+
+  try {
+    await verifyKey(key)
+  } catch (err) {
+    // Deliberately never echoes the key back, and never logs it.
+    const rejected = err instanceof Anthropic.AuthenticationError
+    console.error('[svc] key check failed:', rejected ? 'rejected' : err.constructor.name)
+    return json(rejected ? 401 : 502, {
+      ok: false,
+      error: rejected ? 'Claude rejected that key.' : 'Could not reach Claude to check that key.',
+    })
+  }
+
+  process.env.ANTHROPIC_API_KEY = key
+  _client = null // rebuild on next call, with the new credential
+
+  try {
+    if (persistKey) await persistKey(key)
+  } catch (err) {
+    console.error('[svc] key stored for this session only:', err.message)
+    return json(200, {
+      ok: true,
+      hint: keyHint(),
+      warning: 'Saved for this session, but it could not be written to storage.',
+    })
+  }
+  console.log('[svc] connection established')
+  return json(200, { ok: true, hint: keyHint() })
+}
+
+async function clearKey(res) {
+  delete process.env.ANTHROPIC_API_KEY
+  _client = null
+  try {
+    if (persistKey) await persistKey(null)
+  } catch {
+    /* the in-memory key is gone either way */
+  }
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ ok: true }))
+}
 
 const send = (res, payload) => res.write(`data: ${JSON.stringify(payload)}\n\n`)
 
@@ -87,6 +161,21 @@ async function chat(req, res, body) {
   const messages = (body.messages ?? [])
     .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
     .map((m) => ({ role: m.role, content: m.content }))
+
+  // Document context. The renderer sends only references - document id, offset
+  // and length - and the service slices the passage out of its own cache. So
+  // what the user approved in the sheet and what is actually transmitted are
+  // read from the same bytes; the renderer cannot substitute anything, and no
+  // file leaves this machine except a passage the user ticked.
+  let attached = []
+  if (Array.isArray(body.attachments) && body.attachments.length > 0) {
+    attached = await resolveAttachments(body.attachments)
+    if (attached.length > 0 && messages.length > 0) {
+      const last = messages[messages.length - 1]
+      const blocks = attached.map((a) => `<document path="${a.path}">\n${a.text}\n</document>`)
+      last.content = `${blocks.join('\n\n')}\n\n${last.content}`
+    }
+  }
 
   if (messages.length === 0) {
     res.writeHead(400, { 'content-type': 'application/json' })
@@ -202,21 +291,52 @@ function serveStatic(dir, req, res) {
  * the desktop shell can load everything from one loopback origin and relative
  * /api fetches keep working unchanged. `port: 0` picks a free port.
  */
-export function startServer({ port = PORT, staticDir = null } = {}) {
+export async function startServer({
+  port = PORT,
+  staticDir = null,
+  persist = null,
+  docsDir = null,
+  docsRoots = [],
+} = {}) {
+  persistKey = persist
+  // The library is optional: without a directory to keep it in, /api/docs/*
+  // simply answers 503 and the rest of the app is unaffected.
+  if (docsDir) await initDocs(docsDir, docsRoots)
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/api/health') {
       res.writeHead(200, { 'content-type': 'application/json' })
-      return res.end(JSON.stringify({ connected: hasKey(), models: MODELS, default: DEFAULT_MODEL }))
+      return res.end(
+        JSON.stringify({
+          connected: hasKey(),
+          hint: keyHint(),
+          models: MODELS,
+          default: DEFAULT_MODEL,
+        }),
+      )
     }
-    if (req.method === 'POST' && req.url === '/api/chat') {
+    if (req.method === 'DELETE' && req.url === '/api/key') return void clearKey(res)
+
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const isDocs = url.pathname.startsWith('/api/docs/')
+    if (isDocs && req.method === 'GET') {
+      if (!docsReady()) return void res.writeHead(503).end()
+      return void handleDocs(req, res, url, null)
+    }
+
+    if (req.method === 'POST' && (url.pathname === '/api/chat' || url.pathname === '/api/key' || isDocs)) {
       let raw = ''
       req.on('data', (c) => {
         raw += c
-        if (raw.length > 1e6) req.destroy()
+        // Attachments make a chat body legitimately large; the cap is a
+        // runaway guard, not a feature limit.
+        if (raw.length > 8e6) req.destroy()
       })
       req.on('end', () => {
         try {
-          chat(req, res, JSON.parse(raw))
+          const parsed = JSON.parse(raw)
+          if (isDocs) void handleDocs(req, res, url, parsed)
+          else if (url.pathname === '/api/key') void setKey(res, parsed)
+          else void chat(req, res, parsed)
         } catch {
           res.writeHead(400).end()
         }

@@ -98,3 +98,9 @@ a:hover {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Connection panel entry. */
+@keyframes oFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

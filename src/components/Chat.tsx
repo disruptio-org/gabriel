@@ -34,6 +34,7 @@ function Turn({
   copied,
   onCopy,
   onRegenerate,
+  onConnect,
 }: {
   m: Message
   streaming: boolean
@@ -41,6 +42,7 @@ function Turn({
   copied: boolean
   onCopy: () => void
   onRegenerate: () => void
+  onConnect: () => void
 }) {
   const isUser = m.role === 'user'
   const [hover, setHover] = useState(false)
@@ -119,7 +121,11 @@ function Turn({
       )}
 
       {m.error && showActions && (
-        <div style={{ marginTop: 2, opacity: 0.7 }}>
+        <div style={{ display: 'flex', gap: 16, marginTop: 2, opacity: 0.7 }}>
+          {/* A missing or rejected key is fixable here, not just retryable. */}
+          {(m.error === 'no_key' || m.error === 'auth') && (
+            <Action label="CONNECT" onClick={onConnect} />
+          )}
           <Action label="RETRY" onClick={onRegenerate} />
         </div>
       )}
@@ -134,6 +140,7 @@ export function Chat({
   streamingId,
   convoRef,
   onRegenerate,
+  onConnect,
 }: {
   messages: Message[]
   thinking: boolean
@@ -141,6 +148,7 @@ export function Chat({
   streamingId: string | null
   convoRef: RefObject<HTMLDivElement | null>
   onRegenerate: () => void
+  onConnect: () => void
 }) {
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -193,6 +201,7 @@ export function Chat({
                 window.setTimeout(() => setCopied(null), 1400)
               }}
               onRegenerate={onRegenerate}
+              onConnect={onConnect}
             />
           )
         })}

@@ -22,23 +22,25 @@ npm run app
 
 ### The API key
 
-The key is **never** bundled into the app or committed. Where it is read from
-depends on how you are running:
+The key is **never** bundled into the app or committed.
 
-| Running | Key comes from |
+Press **Ctrl+K** (or click the composer's `Ø NEEDS A CLAUDE CONNECTION - CONNECT`
+line) and paste it. It is verified against Claude before being stored, and after
+that only its last four characters are ever shown again (§16). DISCONNECT removes it.
+
+Where it is stored depends on how you are running:
+
+| Running | Key stored in |
 |---|---|
+| Installed build | `credential.bin` in `%APPDATA%\Personal Intelligence\`, encrypted with `safeStorage` (Windows DPAPI - decryptable only by this Windows user on this machine) |
 | From source (`npm run app`, `npm run dev`) | `.env` in the project root |
-| Installed build | `%APPDATA%\Personal Intelligence\.env` |
 
-Either file is the same one line:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
+An installed build also still reads `%APPDATA%\Personal Intelligence\.env` if
+one is there, so a key placed by hand keeps working; the encrypted store wins.
 
 The app runs without a key - it boots, animates and accepts input, and every
-turn resolves to the graceful "Ø needs a Claude connection." state with a RETRY
-action.
+turn resolves to the graceful "Ø needs a Claude connection." state with CONNECT
+and RETRY actions.
 
 | Script | Does |
 |---|---|
@@ -57,18 +59,83 @@ action.
 
 - **`electron/main.mjs`** — the Windows shell. Frameless, transparent window;
   starts the service in-process on an OS-assigned free port and loads the
-  renderer from it.
+  renderer from it. Owns credential storage: `safeStorage.encryptString` on
+  save, `decryptString` at launch, file removed on disconnect.
 - **`electron/preload.cjs`** — the *only* renderer bridge. Exposes five window
   controls and nothing else: no Node, no filesystem, no credential access.
   `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`.
 - **`server/index.mjs`** — the application service, and the *only* code that
   reads `ANTHROPIC_API_KEY`. `GET /api/health`, `POST /api/chat` (SSE), plus the
-  built renderer when the shell passes it a static dir. Owns the Ø system prompt.
+  built renderer when the shell passes it a static dir. Owns the Ø system prompt
+  and the key endpoints (`POST`/`DELETE /api/key`); it never sends a key back,
+  only a `•••• 1234` hint.
 - **`src/`** — the renderer (React + TypeScript). Talks only to `/api/*`.
 
 The renderer is loaded over loopback rather than `file://` so relative `/api`
 fetches behave identically in the app and in the browser. The key never reaches
 renderer code, is never bundled into the installer, and is never logged (§16).
+
+### The local library
+
+Ø can read the documents on this machine. The whole feature is local by
+construction:
+
+- **`server/docs/extract.mjs`** — text out of `.pdf`, `.docx`, `.pptx`,
+  `.xlsx`, Markdown, code and plain text. Pure JavaScript (`fflate`,
+  `pdfjs-dist`), so there is no native module to rebuild — and nothing in it
+  opens a socket. pdf.js runs with `isEvalSupported: false`, no system fonts and
+  no remote resources: every PDF on a disk is treated as hostile input.
+- **`server/docs/index.mjs`** — the crawler and a BM25 inverted index, stored
+  under `%APPDATA%\Personal Intelligence\index\`. Incremental: a file whose
+  size and mtime are unchanged is never re-read.
+- **`server/docs/search.mjs`** — ranked search, and the passage picker that
+  finds the densest window of query terms in a document.
+
+**What is never indexed.** Indexing a whole user profile would otherwise sweep
+up the user's own secrets and put them one click from leaving the machine, so
+credential-shaped files are skipped outright: `.env*`, `*.pem`, `*.key`,
+`*.pfx`, `id_rsa*`, `credentials*`, `secrets*`, `.npmrc`, `.netrc`, and
+anything whose name contains `secret`/`token`/`password`/`apikey`. Machine
+directories (`node_modules`, `.git`, `AppData`, `dist`, build caches) are
+skipped too, along with dotfolders and files over 25 MB. Roots default to the
+user's profile and nothing above it.
+
+A filename filter cannot see a key hard-coded in the middle of an ordinary
+script, and people do hard-code them - a scan of one real profile found live
+API keys inside three `.py` and `.docx` files. So extraction has a second pass:
+anything credential-shaped (`sk-...`, `AKIA...`, `ghp_...`, `AIza...`, `xox?-`,
+`hf_...`, PEM private-key blocks) is replaced with `[redacted credential]`
+before the text is ever written to the index. The document stays searchable and
+readable; the credential is simply not in it.
+
+**The approval gate.** A send with DOCS ON searches the index locally, and if
+anything matches, the approval sheet opens *before* the request is made. It
+shows each file and the exact passage that would be attached; untick anything,
+or send with none. This is per send, every time.
+
+The renderer never supplies attachment text — only a reference
+(`{id, offset, length}`). The service slices that passage out of the same
+cached extraction the sheet was rendered from, so what was approved and what
+is transmitted are read from the same bytes, and a compromised renderer cannot
+substitute a different file. References to documents outside the configured
+roots resolve to nothing.
+
+Passages are capped at 4,000 characters each and 10 per turn. `Ctrl+D` opens
+the library to browse, search, read a document in-app, and add or remove
+folders. Indexing is never automatic: the library shows `REINDEX` and a live
+count, and can be stopped mid-crawl.
+
+**Checks.** `npm test` runs [`test/privacy.test.mjs`](test/privacy.test.mjs),
+which exercises each of the claims above rather than leaving them as prose: the
+filename filter, the redaction pass, the PDF pen-tracking, every way a forged
+attachment reference can be refused, and - against a local server standing in
+for the API - exactly what the service puts on the wire. It contacts nothing.
+
+**Scans are not failures.** A PDF that is a photograph of a page has no text
+layer, so there is nothing to extract without OCR. Those are counted separately
+as `SCANS (NO TEXT)`; `UNREADABLE` is reserved for files that genuinely could
+not be parsed - encrypted PDFs, corrupt archives, files locked by another
+program. Conflating the two made a healthy index look broken.
 
 ### The icon
 
@@ -200,6 +267,12 @@ Checked in a browser against the running app:
   user message.
 - Maximize/restore, minimize/close to desktop, new conversation via `+` and
   Ctrl+N.
+- Key entry: Ctrl+K and the composer's CONNECT line both open the panel; a
+  malformed key is refused without a network call, a well-formed but invalid one
+  comes back `Claude rejected that key.`, and the field is cleared either way.
+  A good key flips the status line to READY without a restart, and the panel
+  then shows only `STORED: •••• 1234`. DISCONNECT clears both the running
+  service and the stored credential.
 
 The streaming, markdown, stop and regenerate checks above were first run against
 a throwaway local service speaking the same `/api/chat` SSE wire format, which

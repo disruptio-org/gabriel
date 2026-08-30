@@ -15,10 +15,13 @@
     "app": "npm run build && electron .",
     "app:dev": "concurrently -k -n ui,app -c green,magenta \"vite\" \"wait-on http://127.0.0.1:5273 && cross-env PI_DEV_URL=http://127.0.0.1:5273 electron .\"",
     "app:build": "npm run build && node scripts/build-installer.mjs",
-    "icon": "python scripts/make-icon.py"
+    "icon": "python scripts/make-icon.py",
+    "test": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

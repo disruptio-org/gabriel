@@ -10,6 +10,9 @@ export function Composer({
   connected,
   onSend,
   onStop,
+  onConnect,
+  docs,
+  onToggleDocs,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
   busy: boolean
@@ -17,6 +20,10 @@ export function Composer({
   connected: boolean
   onSend: (text: string) => void
   onStop: () => void
+  onConnect: () => void
+  /** Whether a send searches the local library first. Consent is still per send. */
+  docs: boolean
+  onToggleDocs: () => void
 }) {
   const [focused, setFocused] = useState(false)
   const [hoverSend, setHoverSend] = useState(false)
@@ -122,18 +129,55 @@ export function Composer({
           gap: 16,
         }}
       >
-        <span
-          style={{
-            color: connected ? c.ghost : c.warm,
-            fontSize: 9.5,
-            letterSpacing: 1.5,
-            fontFamily: mono,
-          }}
-        >
-          {connected
-            ? 'ENTER SEND · SHIFT+ENTER NEWLINE · ESC STOP'
-            : 'Ø NEEDS A CLAUDE CONNECTION — SET ANTHROPIC_API_KEY IN .env'}
-        </span>
+        {connected ? (
+          <span style={{ display: 'flex', gap: 14, alignItems: 'baseline' }}>
+            <span style={{ color: c.ghost, fontSize: 9.5, letterSpacing: 1.5, fontFamily: mono }}>
+              ENTER SEND · SHIFT+ENTER NEWLINE · ESC STOP
+            </span>
+            {/* Turning this off skips the local search entirely - no passages
+                are found, so none can be offered. */}
+            <button
+              type="button"
+              onClick={onToggleDocs}
+              title={
+                docs
+                  ? 'Ø checks your local library and asks before sending anything from it (Ctrl+D to browse)'
+                  : 'Ø ignores your documents entirely'
+              }
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                cursor: 'pointer',
+                fontFamily: mono,
+                fontSize: 9.5,
+                letterSpacing: 1.5,
+                color: docs ? c.dim : c.ghost,
+              }}
+            >
+              {docs ? 'DOCS ON' : 'DOCS OFF'}
+            </button>
+          </span>
+        ) : (
+          // The fix is one click away rather than a line of documentation.
+          <button
+            type="button"
+            onClick={onConnect}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              color: c.warm,
+              fontSize: 9.5,
+              letterSpacing: 1.5,
+              fontFamily: mono,
+              textAlign: 'left',
+            }}
+          >
+            Ø NEEDS A CLAUDE CONNECTION — CONNECT
+          </button>
+        )}
         <span
           style={{
             color: c.ghost,

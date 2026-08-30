@@ -1,3 +1,4 @@
+import type { Attachment } from './docs'
 import type { ErrorKind, Message } from '../types'
 
 interface StreamHandlers {
@@ -8,8 +9,42 @@ interface StreamHandlers {
 
 export interface Health {
   connected: boolean
+  /** Last four characters of the stored key. Never the key itself (§16). */
+  hint: string | null
   models: string[]
   default: string
+}
+
+export interface KeyResult {
+  ok: boolean
+  hint?: string | null
+  error?: string
+  warning?: string
+}
+
+/**
+ * Hands a key to the local service, which verifies it against Claude before
+ * storing it. The key is never kept in renderer state beyond this call.
+ */
+export async function saveKey(key: string): Promise<KeyResult> {
+  try {
+    const res = await fetch('/api/key', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key }),
+    })
+    return (await res.json()) as KeyResult
+  } catch {
+    return { ok: false, error: 'The local Ø service is not running.' }
+  }
+}
+
+export async function clearKey(): Promise<void> {
+  try {
+    await fetch('/api/key', { method: 'DELETE' })
+  } catch {
+    /* nothing to do - the UI refreshes from health either way */
+  }
 }
 
 export async function checkHealth(): Promise<Health | null> {
@@ -29,6 +64,7 @@ export async function streamChat(
   messages: Message[],
   model: string,
   signal: AbortSignal,
+  attachments: Attachment[],
   h: StreamHandlers,
 ): Promise<void> {
   let res: Response
@@ -41,6 +77,9 @@ export async function streamChat(
         model,
         // Failed turns carry no meaning for the model; drop them from context.
         messages: messages.filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content })),
+        // References only - the service resolves them to the passages the user
+        // approved, from its own copy. No document text is sent from here.
+        attachments,
       }),
     })
   } catch {
