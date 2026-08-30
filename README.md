@@ -20,20 +20,28 @@ npm install
 npm run app
 ```
 
-### The API key
+### The API keys
 
-The key is **never** bundled into the app or committed.
+Keys are **never** bundled into the app or committed.
 
 Press **Ctrl+K** (or click the composer's `Ø NEEDS A CLAUDE CONNECTION - CONNECT`
-line) and paste it. It is verified against Claude before being stored, and after
-that only its last four characters are ever shown again (§16). DISCONNECT removes it.
+line). The panel has a tab per provider:
 
-Where it is stored depends on how you are running:
+| Provider | Needed for | Without it |
+|---|---|---|
+| **Claude** (`sk-ant-...`) | Everything Ø says | The app boots but cannot answer |
+| **OpenAI** (`sk-...`) | Speech to text only | Chat is completely unaffected; the mic is visible but disabled |
 
-| Running | Key stored in |
+Each key is verified against its provider before being stored - the cheapest
+authenticated call that provider offers - and after that only its last four
+characters are ever shown again (§16). DISCONNECT removes one.
+
+Where they are stored depends on how you are running:
+
+| Running | Keys stored in |
 |---|---|
-| Installed build | `credential.bin` in `%APPDATA%\Personal Intelligence\`, encrypted with `safeStorage` (Windows DPAPI - decryptable only by this Windows user on this machine) |
-| From source (`npm run app`, `npm run dev`) | `.env` in the project root |
+| Installed build | `credential.bin` and `credential-openai.bin` in `%APPDATA%\Personal Intelligence\`, encrypted with `safeStorage` (Windows DPAPI - decryptable only by this Windows user on this machine) |
+| From source (`npm run app`, `npm run dev`) | `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in `.env` in the project root |
 
 An installed build also still reads `%APPDATA%\Personal Intelligence\.env` if
 one is there, so a key placed by hand keeps working; the encrypted store wins.
@@ -64,11 +72,16 @@ and RETRY actions.
 - **`electron/preload.cjs`** — the *only* renderer bridge. Exposes five window
   controls and nothing else: no Node, no filesystem, no credential access.
   `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`.
-- **`server/index.mjs`** — the application service, and the *only* code that
-  reads `ANTHROPIC_API_KEY`. `GET /api/health`, `POST /api/chat` (SSE), plus the
-  built renderer when the shell passes it a static dir. Owns the Ø system prompt
-  and the key endpoints (`POST`/`DELETE /api/key`); it never sends a key back,
-  only a `•••• 1234` hint.
+- **`server/index.mjs`** — the application service. `GET /api/health`,
+  `POST /api/chat` (SSE), `POST /api/transcribe`, plus the built renderer when
+  the shell passes it a static dir. Owns the Ø system prompt and the key
+  endpoints (`POST`/`DELETE /api/key`); it never sends a key back, only a
+  `•••• 1234` hint.
+- **`server/providers.mjs`** — the credential registry: the only module that
+  knows which providers exist, which environment variable each key lives in, and
+  what a valid one looks like. It exists so the single-key assumption is in one
+  file rather than spread across the `.env` writer, the vault and `/api/health`.
+  No renderer code reads a key; this process does.
 - **`src/`** — the renderer (React + TypeScript). Talks only to `/api/*`.
 
 The renderer is loaded over loopback rather than `file://` so relative `/api`
@@ -136,6 +149,67 @@ layer, so there is nothing to extract without OCR. Those are counted separately
 as `SCANS (NO TEXT)`; `UNREADABLE` is reserved for files that genuinely could
 not be parsed - encrypted PDFs, corrupt archives, files locked by another
 program. Conflating the two made a healthy index look broken.
+
+### Voice, and where the audio goes
+
+Ø can listen. This is the one part of the app that is **not** local, and it is
+worth being exact about, because everything else here is.
+
+**A recording leaves this machine.** Pressing the microphone records audio in
+memory and uploads it to OpenAI, which turns it into text. The text is what
+reaches Claude; the audio never does. This is different from the document
+library, where nothing leaves without a per-send tick — so it is disclosed
+once, in a modal shown before the microphone is ever opened, and the answer is
+remembered.
+
+It is also disclosed to Ø. The `SYSTEM` prompt in `server/index.mjs` describes
+the audio path in the same terms as the document path, and tells Ø in as many
+words not to claim the user's voice stays on their computer. Asked where its
+audio goes, Ø answers correctly rather than reciting a promise the app stopped
+keeping.
+
+**What is retained: nothing.** The recording exists as a `Blob` in renderer
+memory, is posted to the local service, is forwarded once, and is dropped when
+the transcript returns. It is never written to disk, never logged, never put in
+`localStorage`, and there is no recording history. What survives a voice turn is
+its text, as an ordinary message.
+
+**Two ways to use it.**
+
+- **Dictation** — click the mic (or `Ctrl+Space`), speak, click again. The
+  transcript lands in the composer as editable text and is **never auto-sent**.
+  You own it until you press Enter. `Esc` discards the recording.
+- **Hands-free** — the `VOICE ON` pill. Ø listens, notices when you have
+  stopped talking, sends the sentence itself, and reopens the microphone once
+  the answer finishes. `Esc` leaves.
+
+Turn-taking is a Web Audio RMS meter on a 50ms tick: about 1.2s below threshold
+ends the turn, 60s caps it, and anything under 0.4s of speech is discarded
+without a request — a cough should not cost a round trip. The threshold is
+calibrated from the first moments of the room rather than fixed, so a quiet room
+does not make its own fan count as talking.
+
+**DOCS and hands-free are mutually exclusive.** The approval sheet is a consent
+gate, and hands-free has nobody at the keyboard to tick it. Rather than let one
+mode silently weaken the other, enabling either disables the other and the
+disabled pill says why. During a hands-free turn no local search runs at all, so
+there are no passages to offer.
+
+- **`server/voice.mjs`** — the only place a recording is sent anywhere. Calls
+  OpenAI's `gpt-4o-transcribe` over plain `fetch`; there is no second SDK in the
+  dependency tree. Chosen over `whisper-1` for a lower word error rate and for
+  handling a sentence that switches language mid-way.
+- **`src/lib/voice.ts`** — capture and the silence detector. The microphone
+  track is stopped on every exit path, so the Windows recording indicator never
+  outlives the recording.
+
+**Checks.** [`test/voice.test.mjs`](test/voice.test.mjs) points the OpenAI base
+URL at a local server and asserts the promises rather than the behaviours: with
+no key, zero upload attempts are made at all; silence and oversized recordings
+are refused before the network; a real recording arrives byte-identical at
+`/audio/transcriptions` and leaves no file anywhere under the app directory; and
+the OpenAI key appears in no response the renderer can read, only as a bearer
+token on the way out. It contacts nothing.
 
 ### The icon
 
@@ -296,6 +370,14 @@ in the browser:
 
 Still unverified: the refusal path and the `rate_limit` branch, neither of which
 can be triggered on demand.
+
+Voice is verified only at the service boundary, by `test/voice.test.mjs`.
+Everything downstream of a real microphone - the consent modal in situ,
+capture, transcription quality, how the 1.2s turn-end actually feels, auto-send
+and the mic reopening - has not been exercised, because the automated browser
+refuses `getUserMedia` outright. It needs a manual pass in a packaged build,
+including one with the Windows microphone toggle off, which fails identically to
+a denied browser permission and so has its own message.
 
 ### Identity-linked keys
 
