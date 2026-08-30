@@ -13,6 +13,35 @@ export type ProviderId = 'anthropic' | 'openai'
 /** The primary provider: without it there is no app, only a connect prompt. */
 export const PRIMARY: ProviderId = 'anthropic'
 
+export const PROVIDER_IDS: ProviderId[] = ['anthropic', 'openai']
+
+/**
+ * What the connection dialog needs to say about each provider. The prefix
+ * duplicates a rule the service also enforces - deliberately, so an obviously
+ * malformed key costs no round trip. The service stays authoritative.
+ */
+export const PROVIDER_UI: Record<
+  ProviderId,
+  { tab: string; prefix: string; placeholder: string; purpose: string; malformed: string }
+> = {
+  anthropic: {
+    tab: 'CLAUDE',
+    prefix: 'sk-ant-',
+    placeholder: 'sk-ant-...',
+    purpose: 'Ø needs a Claude API key to think. It is verified, then stored on this machine only.',
+    malformed: 'That does not look like an Anthropic API key.',
+  },
+  openai: {
+    tab: 'OPENAI',
+    prefix: 'sk-',
+    placeholder: 'sk-...',
+    purpose:
+      'Voice needs an OpenAI API key to turn speech into text. Optional - without it, ' +
+      'everything else works exactly as it does now.',
+    malformed: 'That does not look like an OpenAI API key.',
+  },
+}
+
 export interface ProviderStatus {
   label: string
   connected: boolean

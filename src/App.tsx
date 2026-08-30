@@ -8,6 +8,7 @@ import { Library } from './components/Library'
 import { Desktop } from './components/Desktop'
 import { effectiveMotion, loadConfig } from './config'
 import { checkHealth, streamChat, PRIMARY } from './lib/claude'
+import type { ProviderId, ProviderStatus } from './lib/claude'
 import { searchDocs, type Attachment, type DocHit } from './lib/docs'
 import { isDesktopApp, shell } from './lib/shell'
 import { c, ease, mono } from './theme'
@@ -73,7 +74,7 @@ export default function App() {
   const [thinkLabel, setThinkLabel] = useState(THINK_LABELS[0]!)
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const [connected, setConnected] = useState(true)
-  const [keyHint, setKeyHint] = useState<string | null>(null)
+  const [providers, setProviders] = useState<Record<ProviderId, ProviderStatus> | null>(null)
   const [showConnection, setShowConnection] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
   // Consent is per send: this only decides whether the local search runs at all.
@@ -101,9 +102,8 @@ export default function App() {
     const h = await checkHealth()
     // Only the primary provider decides whether the app is usable; a second
     // provider's credential gates its own feature, never the conversation.
-    const primary = h?.providers?.[PRIMARY]
-    setConnected(primary?.connected ?? false)
-    setKeyHint(primary?.hint ?? null)
+    setProviders(h?.providers ?? null)
+    setConnected(h?.providers?.[PRIMARY]?.connected ?? false)
   }, [])
 
   useEffect(() => {
@@ -460,7 +460,7 @@ export default function App() {
 
           {showConnection && (
             <Connection
-              hint={keyHint}
+              providers={providers}
               onClose={() => setShowConnection(false)}
               onDone={() => {
                 setShowConnection(false)
