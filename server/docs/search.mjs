@@ -25,6 +25,27 @@ const COMPLETE_TITLE = 1.6
 /** The containing folders, worth less than the name but more than nothing. */
 const PATH_WEIGHT = 0.5
 
+/**
+ * How strong a match must be, as a fraction of the best one, to be reordered
+ * by date when the user asks for the most recent.
+ *
+ * "The latest contract" has to still mean a contract. Sorting everything that
+ * ranked at all by date does not: the tail is thousands of documents that
+ * matched one term once, and the newest of those wins outright.
+ */
+const RECENT_FLOOR = 0.4
+
+/**
+ * How far down the ranking the date reordering may reach.
+ *
+ * The floor above is a fraction of the best score, and on a large library the
+ * scores are compressed enough that a great many weak matches clear it. This
+ * bounds it by position as well. The two guard different failures - the floor
+ * protects a handful of documents where there is no tail to speak of, the
+ * pool protects tens of thousands where there is nothing but tail.
+ */
+const RECENT_POOL = 40
+
 /** Name tokens per document, computed once per index rather than per query. */
 function titleTokens(index, doc) {
   index._titles ??= new Map()
@@ -156,11 +177,43 @@ export function bestPassage(text, terms, { window = 900 } = {}) {
  * best passage - never the whole file. The caller decides whether any of it is
  * ever attached to a prompt.
  */
-export async function search(index, query, { limit = 8, passages = true } = {}) {
+export async function search(index, query, { limit = 8, passages = true, filter = null, recent = false } = {}) {
   const terms = [...new Set(tokenize(query))]
-  if (terms.length === 0) return { terms, results: [] }
+  const keep = filter ?? (() => true)
 
-  const ranked = await score(index, terms)
+  // "The PDFs I touched last week" has no keywords in it at all. With a filter
+  // to narrow by and an order to impose, that is a complete request - so an
+  // empty query is answered by date rather than refused. Without either, it
+  // still means nothing and returns nothing.
+  let ranked
+  if (terms.length === 0) {
+    if (!filter && !recent) return { terms, results: [] }
+    ranked = [...index.docs.values()]
+      .filter(keep)
+      .sort((a, b) => b.mtime - a.mtime)
+      .map((d) => [d.id, d.mtime])
+  } else {
+    ranked = (await score(index, terms)).filter(([id]) => {
+      const doc = index.docs.get(id)
+      return doc ? keep(doc) : false
+    })
+    // "The most recent contract" has to still mean a contract. Sorting the
+    // whole ranked list by date does not: the tail is thousands of documents
+    // that matched a term once, and the newest of those wins outright. So the
+    // date ordering is applied to the strongest matches only, and the rest are
+    // left where relevance put them.
+    if (recent) {
+      // Which documents count as "genuinely matching" has to be judged against
+      // this query's own scores - they are not comparable between queries - so
+      // it is a fraction of the best score rather than a fixed number.
+      const floor = (ranked[0]?.[1] ?? 0) * RECENT_FLOOR
+      const pool = Math.max(RECENT_POOL, limit * 5)
+      const strong = ([, sc], i) => i < pool && sc >= floor
+      const head = ranked.filter(strong)
+      head.sort((a, b) => (index.docs.get(b[0])?.mtime ?? 0) - (index.docs.get(a[0])?.mtime ?? 0))
+      ranked = [...head, ...ranked.filter((r, i) => !strong(r, i))]
+    }
+  }
 
   // A pipeline that writes `upload_A_1759832554_<name>` beside `<name>` leaves
   // a library full of files that are the same document. Ranked together they

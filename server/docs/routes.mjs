@@ -95,6 +95,15 @@ export async function resolveAttachments(refs) {
   return out
 }
 
+const DAY = 86_400_000
+
+/** A YYYY-MM-DD from the model, or null for anything unparseable. */
+function dateMs(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null
+  const ms = Date.parse(`${value}T00:00:00`)
+  return Number.isNaN(ms) ? null : ms
+}
+
 /**
  * The search behind Ø's `find_documents` tool.
  *
@@ -108,12 +117,39 @@ export async function resolveAttachments(refs) {
  * Names and containing folders do go, because without them Ø cannot tell two
  * files apart or say anything useful about what it found.
  */
-export async function findDocuments(query, { limit = 8 } = {}) {
+export async function findDocuments(query, { limit = 8, folder, ext, after, before, recent } = {}) {
   if (!index) return { ready: false, results: [] }
   const capped = Math.min(Math.max(Number(limit) || 8, 1), 15)
+
+  // Each filter is skipped unless it was actually given, so an absent one can
+  // never narrow anything. Extensions are accepted with or without the dot,
+  // because Ø will write both.
+  const wantFolder = typeof folder === 'string' && folder.trim() ? folder.trim().toLowerCase() : null
+  const wantExts =
+    Array.isArray(ext) && ext.length > 0
+      ? new Set(ext.map((e) => `.${String(e).replace(/^\./, '').toLowerCase()}`))
+      : null
+  const afterMs = dateMs(after)
+  const beforeMs = dateMs(before)
+
+  const filter =
+    wantFolder || wantExts || afterMs !== null || beforeMs !== null
+      ? (doc) => {
+          if (wantFolder && !doc.path.toLowerCase().includes(wantFolder)) return false
+          if (wantExts && !wantExts.has(doc.ext)) return false
+          if (afterMs !== null && doc.mtime < afterMs) return false
+          // Inclusive of the named day, which is what "before 2026-03-01" means
+          // to a person reading it.
+          if (beforeMs !== null && doc.mtime > beforeMs + DAY) return false
+          return true
+        }
+      : null
+
   const { terms, results } = await search(index, String(query ?? ''), {
     limit: capped,
     passages: false,
+    filter,
+    recent: Boolean(recent),
   })
   return {
     ready: true,

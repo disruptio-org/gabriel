@@ -60,6 +60,23 @@ const MAX_TOOL_ROUNDS = 4
  * one, and a tool that returned text would take that decision away from them
  * without ever showing them a sheet.
  */
+/**
+ * What the user is shown while a search runs, and above its results.
+ *
+ * The keywords alone would be a lie when the filters did most of the work: a
+ * search restricted to last week's PDFs, with no keywords at all, would
+ * otherwise read as a search for nothing.
+ */
+function searchLabel(input) {
+  const parts = [String(input.query ?? '').trim()].filter(Boolean)
+  if (input.folder) parts.push(`in ${input.folder}`)
+  if (Array.isArray(input.ext) && input.ext.length > 0) parts.push(input.ext.join('/'))
+  if (input.after) parts.push(`after ${input.after}`)
+  if (input.before) parts.push(`before ${input.before}`)
+  if (input.recent) parts.push('newest first')
+  return parts.join(' · ') || 'your documents'
+}
+
 const FIND_DOCUMENTS = {
   name: 'find_documents',
   description: [
@@ -71,17 +88,51 @@ const FIND_DOCUMENTS = {
     'different terms before concluding it is not there. To read one, tell the',
     'user which you found and ask them to attach it - you cannot open it',
     'yourself.',
+    'Narrow with the filters when the user gives you something to narrow by -',
+    'a folder, a kind of file, a period of time. A first search that returns',
+    'the wrong things is not a dead end: change the terms, or add a filter,',
+    'and search again.',
   ].join(' '),
   input_schema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
-        description: 'Keywords to search for. Not a sentence.',
+        description:
+          'Keywords to search for. Not a sentence. May be empty when you are ' +
+          'filtering instead - "the PDFs I edited last week" needs no keywords.',
       },
       limit: {
         type: 'integer',
         description: 'How many documents to return, 1-15. Defaults to 8.',
+      },
+      folder: {
+        type: 'string',
+        description:
+          'Only documents whose full path contains this text, case-insensitive. ' +
+          'A folder name like "Blue Gorilla" is usually enough - do not guess ' +
+          'a complete path.',
+      },
+      ext: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Only these file types, e.g. ["pdf","docx"]. Use when the user names ' +
+          'a kind of file - a deck is pptx or pdf, a spreadsheet is xlsx or csv.',
+      },
+      after: {
+        type: 'string',
+        description: 'Only documents modified on or after this date, YYYY-MM-DD.',
+      },
+      before: {
+        type: 'string',
+        description: 'Only documents modified on or before this date, YYYY-MM-DD.',
+      },
+      recent: {
+        type: 'boolean',
+        description:
+          'Order by date modified, newest first, instead of by relevance. Use ' +
+          'for "the latest" or "what did I work on recently".',
       },
     },
     required: ['query'],
@@ -348,12 +399,20 @@ async function chat(req, res, body) {
         params.messages.push({ role: 'assistant', content: final.content })
         const outcomes = []
         for (const call of calls) {
-          const query = String(call.input?.query ?? '')
-          send(res, { type: 'searching', query })
-          const found = await findDocuments(query, { limit: call.input?.limit })
+          const input = call.input ?? {}
+          const label = searchLabel(input)
+          send(res, { type: 'searching', query: label })
+          const found = await findDocuments(String(input.query ?? ''), {
+            limit: input.limit,
+            folder: input.folder,
+            ext: input.ext,
+            after: input.after,
+            before: input.before,
+            recent: input.recent,
+          })
           // The renderer gets the same results Ø does, so the user can act on
           // what was found rather than only read about it.
-          send(res, { type: 'results', query, results: found.results })
+          send(res, { type: 'results', query: label, results: found.results })
           outcomes.push({
             type: 'tool_result',
             tool_use_id: call.id,
