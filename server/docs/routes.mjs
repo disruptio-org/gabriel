@@ -79,6 +79,43 @@ export async function resolveAttachments(refs) {
   return out
 }
 
+/**
+ * The search behind Ø's `find_documents` tool.
+ *
+ * Deliberately returns *no document text*. Rule 2 at the top of this file says
+ * nothing here sends anything anywhere, and a tool that handed passages
+ * straight to Claude would be the one thing that breaks it - content would
+ * leave the machine because Ø decided to look, not because the user ticked
+ * anything. So this answers "which documents are these" and stops there.
+ * Reading one is a separate, approved act.
+ *
+ * Names and containing folders do go, because without them Ø cannot tell two
+ * files apart or say anything useful about what it found.
+ */
+export async function findDocuments(query, { limit = 8 } = {}) {
+  if (!index) return { ready: false, results: [] }
+  const capped = Math.min(Math.max(Number(limit) || 8, 1), 15)
+  const { terms, results } = await search(index, String(query ?? ''), {
+    limit: capped,
+    passages: false,
+  })
+  return {
+    ready: true,
+    terms,
+    indexed: index.docs.size,
+    results: results.map((r) => ({
+      id: r.id,
+      name: r.name,
+      folder: r.path.slice(0, r.path.length - r.name.length).replace(/[\\/]$/, ''),
+      ext: r.ext,
+      // Bytes and epoch millis are not what a reader wants to reason about.
+      size_kb: Math.max(1, Math.round(r.size / 1024)),
+      modified: new Date(r.mtime).toISOString().slice(0, 10),
+      copies: r.duplicates > 0 ? r.duplicates + 1 : undefined,
+    })),
+  }
+}
+
 export async function handleDocs(req, res, url, body) {
   if (!index) return json(res, 503, { error: 'index not ready' })
   const route = url.pathname.slice('/api/docs/'.length)

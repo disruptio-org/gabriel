@@ -1,6 +1,6 @@
 import { useState, type RefObject } from 'react'
 import { c, mono, sans } from '../theme'
-import type { Message } from '../types'
+import type { FoundInTurn, Message } from '../types'
 import { Glyph } from './Glyph'
 import { Markdown } from './Markdown'
 
@@ -90,6 +90,8 @@ function Turn({
       ) : (
         <Markdown text={m.content} streaming={streaming} />
       )}
+
+      {m.found && m.found.length > 0 && <Found found={m.found} />}
 
       {m.stopped && (
         <div
@@ -225,6 +227,76 @@ export function Chat({
 
         <div style={{ height: 8 }} />
       </div>
+    </div>
+  )
+}
+
+
+/**
+ * The documents Ø turned up while answering.
+ *
+ * Shown as a list of files rather than folded into the prose, because the
+ * document is the thing the user wanted - not a sentence about it. Nothing here
+ * has been read: these are names, and what to do with one is the reader's
+ * decision.
+ */
+function Found({ found }: { found: FoundInTurn[] }) {
+  // The same document can surface in two searches within one turn; showing it
+  // twice would suggest there are two of it.
+  const seen = new Set<string>()
+  const rows = []
+  for (const f of found) {
+    for (const r of f.results) {
+      if (seen.has(r.id)) continue
+      seen.add(r.id)
+      rows.push(r)
+    }
+  }
+  if (rows.length === 0) {
+    return (
+      <div
+        style={{
+          fontFamily: mono,
+          fontSize: 10,
+          letterSpacing: 2,
+          color: c.fainter,
+          marginTop: 6,
+        }}
+      >
+        NOTHING MATCHED — {found.map((f) => f.query.toUpperCase()).join(' · ')}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginTop: 8 }}>
+      <div style={{ fontFamily: mono, fontSize: 9.5, letterSpacing: 2, color: c.fainter }}>
+        FOUND IN YOUR DOCUMENTS
+      </div>
+      {rows.map((r) => (
+        <div
+          key={r.id}
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 10,
+            fontFamily: mono,
+            fontSize: 11.5,
+            color: c.faint,
+          }}
+        >
+          <span style={{ color: c.dim, fontSize: 9.5, letterSpacing: 1, minWidth: 34 }}>
+            {r.ext.replace('.', '').toUpperCase()}
+          </span>
+          <span style={{ color: c.code, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {r.name}
+          </span>
+          <span style={{ color: c.fainter, fontSize: 9.5, letterSpacing: 1, marginLeft: 'auto' }}>
+            {r.modified}
+            {r.copies ? ` · ${r.copies} COPIES` : ''}
+          </span>
+        </div>
+      ))}
     </div>
   )
 }

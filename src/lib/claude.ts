@@ -1,10 +1,31 @@
 import type { Attachment } from './docs'
 import type { ErrorKind, Message } from '../types'
 
+/**
+ * One document Ø turned up while answering.
+ *
+ * Names and metadata only, mirroring what the service tells Claude - there is
+ * no passage here, because nothing has been read. Acting on one of these is the
+ * user's move.
+ */
+export interface FoundDoc {
+  id: string
+  name: string
+  folder: string
+  ext: string
+  size_kb: number
+  modified: string
+  copies?: number
+}
+
 interface StreamHandlers {
   onDelta: (text: string) => void
   onError: (kind: ErrorKind, message: string, detail?: string) => void
   onDone: () => void
+  /** Ø has started a search; the query is its words, not the user's. */
+  onSearching?: (query: string) => void
+  /** What that search returned, handed over as it happens rather than at the end. */
+  onResults?: (query: string, results: FoundDoc[]) => void
 }
 
 /** Which provider a credential belongs to. Mirrors server/providers.mjs. */
@@ -106,6 +127,8 @@ export async function streamChat(
   signal: AbortSignal,
   attachments: Attachment[],
   h: StreamHandlers,
+  /** Whether Ø may search the library this turn. Off in hands-free, as DOCS is. */
+  docs = true,
 ): Promise<void> {
   let res: Response
   try {
@@ -120,6 +143,7 @@ export async function streamChat(
         // References only - the service resolves them to the passages the user
         // approved, from its own copy. No document text is sent from here.
         attachments,
+        docs,
       }),
     })
   } catch {
@@ -152,10 +176,14 @@ export async function streamChat(
         const ev = JSON.parse(line.slice(6)) as
           | { type: 'delta'; text: string }
           | { type: 'error'; kind: ErrorKind; message: string; detail?: string }
+          | { type: 'searching'; query: string }
+          | { type: 'results'; query: string; results: FoundDoc[] }
           | { type: 'done' }
 
         if (ev.type === 'delta') h.onDelta(ev.text)
         else if (ev.type === 'error') h.onError(ev.kind, ev.message, ev.detail)
+        else if (ev.type === 'searching') h.onSearching?.(ev.query)
+        else if (ev.type === 'results') h.onResults?.(ev.query, ev.results)
         else h.onDone()
       }
     }

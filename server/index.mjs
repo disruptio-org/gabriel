@@ -8,7 +8,13 @@ import http from 'node:http'
 import { readFileSync, createReadStream, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
-import { handleDocs, docsReady, resolveAttachments, initDocs } from './docs/routes.mjs'
+import {
+  handleDocs,
+  docsReady,
+  resolveAttachments,
+  initDocs,
+  findDocuments,
+} from './docs/routes.mjs'
 import {
   PROVIDERS,
   PRIMARY,
@@ -36,6 +42,52 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01'
 export const MODELS = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']
 const DEFAULT_MODEL = MODELS[0]
 
+/**
+ * How many times Ø may search within a single turn.
+ *
+ * More than one because the first query is often the user's words rather than
+ * the document's, and a second attempt with better terms is exactly what a
+ * person would do. Bounded because each round is a full model call, and a
+ * search that has not found it in four tries is not going to.
+ */
+const MAX_TOOL_ROUNDS = 4
+
+/**
+ * The library, as Ø can use it.
+ *
+ * It returns which documents exist and nothing about what they say. That is the
+ * whole design: the user's approval is what turns a found document into a read
+ * one, and a tool that returned text would take that decision away from them
+ * without ever showing them a sheet.
+ */
+const FIND_DOCUMENTS = {
+  name: 'find_documents',
+  description: [
+    "Search the user's own documents on this computer by keyword.",
+    'Returns file names, folders, dates and sizes - never their contents.',
+    'Use it whenever the user refers to a document of theirs, asks where',
+    'something is, or asks what they have on a subject. Search with the words',
+    'likely to be in the file name or the text; if nothing fits, try again with',
+    'different terms before concluding it is not there. To read one, tell the',
+    'user which you found and ask them to attach it - you cannot open it',
+    'yourself.',
+  ].join(' '),
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'Keywords to search for. Not a sentence.',
+      },
+      limit: {
+        type: 'integer',
+        description: 'How many documents to return, 1-15. Defaults to 8.',
+      },
+    },
+    required: ['query'],
+  },
+}
+
 // Behavioural contract for Ø, per requirements §13. This establishes reasoning
 // behaviour - it is deliberately not a theatrical persona.
 const SYSTEM = `You are Ø, a personal thinking partner. You exist to help one person think, not to please them.
@@ -54,13 +106,17 @@ Be imaginative and unconventional where it helps, but never invent facts to make
 
 When you have enough information, give a concrete recommendation. If one missing fact would materially change the answer, ask a single focused question instead of hedging across every branch.
 
-You run inside a desktop app on the user's own machine, and that app can search their documents. It keeps a local index of the files on this computer; when the user sends a message with DOCS ON, it searches that index and shows them the matching passages, and only what they tick is attached to the turn. So the honest answer to "can you see my files" is yes, through that mechanism, with their approval each time - never "I have no access to your computer", which is true of the model in general but false of this app.
+You run inside a desktop app on the user's own machine, and that app can search their documents. It keeps a local index of the files on this computer. So the honest answer to "can you see my files" is yes, through the mechanisms below, with their approval - never "I have no access to your computer", which is true of the model in general but false of this app.
+
+You have a find_documents tool. It searches that index and tells you which documents exist - names, folders, dates, sizes - and nothing whatsoever about what is inside them. Use it whenever the user refers to a document of theirs rather than guessing or asking them for the path; they have tens of thousands of files and do not remember where things are. Search the way the file is likely to be named as well as what it is likely to say, and try different terms before concluding something is not there.
+
+What the tool returns is a list, not a reading. You have not seen the contents of anything it finds, and you must never write as though you have - do not summarise, quote, or characterise a document you have only found. Tell the user what you found and let them attach it; the next turn will carry the passages if they approve. Saying "I found three files that look relevant - attach the first and I can tell you what it says" is correct. Inventing what is in it is not.
 
 When the turn carries <document> blocks, they are those approved passages. Ground your answer in them and name the file you are drawing on. If they do not contain the answer, say so plainly rather than inferring one - and never claim to have read a file you were not given.
 
 The app can also listen. When the user presses the microphone it records audio on this machine and sends that recording to OpenAI to be turned into text, and the text is what reaches you. So if they ask where their voice goes, say so plainly: the recording does leave this machine, which is different from their documents - those are only ever sent as passages they ticked. The audio is held for the length of one request and discarded once the text comes back; it is never stored, and you never receive the audio itself, only text the user chose to send. Do not tell them their voice stays on their computer, because it does not.
 
-When a question is about the user's own files and no <document> block arrived, do not conclude the files are unreachable. Say that nothing matched this turn and point at the cause: DOCS may be off, or the library may not be indexed yet (Ctrl+D opens it, REINDEX builds it).
+When a question is about the user's own files and no <document> block arrived, do not conclude the files are unreachable. Search with the tool. If the search itself comes back empty, say that nothing matched and point at the cause: the terms may be wrong, or the library may not be indexed yet (Ctrl+D opens it, REINDEX builds it).
 
 Write in clean, concise Markdown. No filler, no flattery, no restating the question back.`
 
@@ -83,6 +139,9 @@ function client() {
 // the OS credential store, the standalone dev service writes .env. Called as
 // persistKey(provider, key), with null to remove.
 let persistKey = null
+
+/** Whether the server currently running was given a library to search. */
+let libraryConfigured = false
 
 /**
  * Confirms a key is live by listing models - the cheapest authenticated call
@@ -241,6 +300,11 @@ async function chat(req, res, body) {
     messages,
   }
 
+  // Offered only when there is an index to search. Without this the tool would
+  // be advertised and then fail, which teaches Ø that the library is broken
+  // rather than that it is still being built.
+  if (libraryConfigured && docsReady() && body.docs !== false) params.tools = [FIND_DOCUMENTS]
+
   const controller = new AbortController()
   // Abort on the RESPONSE closing, not the request. A request stream emits
   // 'close' as soon as its body has been read, which is before the answer has
@@ -256,8 +320,13 @@ async function chat(req, res, body) {
 
   let sentAny = false
   let useFallbacks = true
+  let rounds = 0
+  let retried = false
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Two separate limits share this loop: `retried` guards the one-off retry
+  // without fallbacks, `rounds` guards how many times Ø may search before it
+  // has to answer with what it has.
+  for (;;) {
     try {
       const stream = openStream(params, controller.signal, useFallbacks)
       for await (const event of stream) {
@@ -267,6 +336,34 @@ async function chat(req, res, body) {
         }
       }
       const final = await stream.finalMessage()
+
+      // Ø asked to look something up. Run the search here - the index never
+      // leaves this process - hand the results back, and let it carry on.
+      if (final.stop_reason === 'tool_use' && rounds < MAX_TOOL_ROUNDS) {
+        rounds += 1
+        const calls = final.content.filter(
+          (b) => b.type === 'tool_use' && b.name === FIND_DOCUMENTS.name,
+        )
+        // Thinking and tool_use blocks both have to go back verbatim.
+        params.messages.push({ role: 'assistant', content: final.content })
+        const outcomes = []
+        for (const call of calls) {
+          const query = String(call.input?.query ?? '')
+          send(res, { type: 'searching', query })
+          const found = await findDocuments(query, { limit: call.input?.limit })
+          // The renderer gets the same results Ø does, so the user can act on
+          // what was found rather than only read about it.
+          send(res, { type: 'results', query, results: found.results })
+          outcomes.push({
+            type: 'tool_result',
+            tool_use_id: call.id,
+            content: JSON.stringify(found),
+          })
+        }
+        params.messages.push({ role: 'user', content: outcomes })
+        continue
+      }
+
       if (final.stop_reason === 'refusal') {
         send(res, {
           type: 'error',
@@ -281,9 +378,10 @@ async function chat(req, res, body) {
 
       // The fallbacks parameter is rejected on some routes; if it is refused
       // before any output, retry once on the plain streaming endpoint.
-      if (err instanceof Anthropic.BadRequestError && useFallbacks && !sentAny) {
+      if (err instanceof Anthropic.BadRequestError && useFallbacks && !retried && !sentAny) {
         console.warn('[svc] refusal fallbacks rejected, retrying without:', err.message)
         useFallbacks = false
+        retried = true
         continue
       }
 
@@ -350,6 +448,14 @@ export async function startServer({
   persistKey = persist
   // The library is optional: without a directory to keep it in, /api/docs/*
   // simply answers 503 and the rest of the app is unaffected.
+  //
+  // Recorded here as well as in routes.mjs because that module holds its index
+  // in a module-level variable: a server started without a library would
+  // otherwise still offer the search tool, backed by an index some earlier
+  // server in the same process happened to load. One server per process is the
+  // only case that ships, but a service that behaves according to its own
+  // configuration rather than the process's history is worth the one line.
+  libraryConfigured = Boolean(docsDir)
   if (docsDir) await initDocs(docsDir, docsRoots)
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')

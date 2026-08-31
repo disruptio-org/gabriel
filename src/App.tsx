@@ -13,7 +13,7 @@ import type { ProviderId, ProviderStatus } from './lib/claude'
 import { searchDocs, type Attachment, type DocHit } from './lib/docs'
 import { isDesktopApp, shell } from './lib/shell'
 import { c, ease, mono } from './theme'
-import type { Message, Phase } from './types'
+import type { FoundInTurn, Message, Phase } from './types'
 
 const THINK_LABELS = ['thinking', 'examining assumptions', 'considering alternatives', 'synthesizing']
 
@@ -103,6 +103,10 @@ export default function App() {
    * OFF, no search runs, which is the whole promise of the exclusion.
    */
   const docsActive = useDocs && !handsFree
+  // Read inside the streaming callback, which is deliberately not rebuilt when
+  // the switch moves - a regenerate must use the setting as it stands now.
+  const docsActiveRef = useRef(docsActive)
+  docsActiveRef.current = docsActive
 
   const promptRef = useRef<HTMLTextAreaElement | null>(null)
   const convoRef = useRef<HTMLDivElement | null>(null)
@@ -179,6 +183,9 @@ export default function App() {
       // The assistant turn is created by the first delta, so the thinking state
       // gives way the instant real output arrives - never on a timer.
       let assistantId: string | null = null
+      // Searches land before the first delta, so they are held until there is
+      // an assistant turn to attach them to.
+      const found: FoundInTurn[] = []
 
       void streamChat(history, config.model, controller.signal, attachments, {
         onDelta: (text) => {
@@ -188,10 +195,30 @@ export default function App() {
             stopLabels()
             setThinking(false)
             setStreamingId(assistantId)
-            setMessages((prev) => [...prev, { id: assistantId!, role: 'assistant', content: text }])
+            setMessages((prev) => [
+              ...prev,
+              { id: assistantId!, role: 'assistant', content: text, found: [...found] },
+            ])
           } else {
             setMessages((prev) =>
               prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + text } : m)),
+            )
+          }
+          scrollBottom()
+        },
+        onSearching: () => {
+          // The label says what is actually happening; a search takes long
+          // enough that "thinking" would be a small lie.
+          stopLabels()
+          setThinkLabel('searching your documents')
+        },
+        onResults: (query, results) => {
+          found.push({ query, results })
+          // If the turn already exists, the results belong on it now rather
+          // than at the end of the stream.
+          if (assistantId !== null) {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantId ? { ...m, found: [...found] } : m)),
             )
           }
           scrollBottom()
@@ -216,7 +243,11 @@ export default function App() {
           streamingIdRef.current = null
           scrollBottom()
         },
-      })
+      },
+      // Ø may search only when the library is in play at all - the same switch
+      // that governs the approval sheet, so DOCS OFF means DOCS OFF.
+      docsActiveRef.current,
+      )
     },
     [config.model, scrollBottom, stopLabels],
   )
