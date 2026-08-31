@@ -29,6 +29,22 @@ export async function initDocs(dir, defaultRoots = []) {
 
 export const docsReady = () => index !== null
 
+/**
+ * The absolute path of an indexed document, or null.
+ *
+ * The one way the desktop shell is allowed to learn a path, and the reason it
+ * takes an id rather than taking the path itself: opening a file in its native
+ * application is the sharpest capability in this app, and the renderer must not
+ * be able to name its target. An id that is not in the index, or a document
+ * that has since fallen outside the configured folders, resolves to nothing -
+ * so the set of openable files is exactly the set the user chose to index.
+ */
+export function documentPath(id) {
+  const doc = index?.docs.get(id)
+  if (!doc || !index.contains(doc.path)) return null
+  return doc.path
+}
+
 const json = (res, code, payload) => {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(payload))

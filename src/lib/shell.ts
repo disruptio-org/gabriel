@@ -12,6 +12,10 @@ export interface Shell {
   toggleMaximize: () => Promise<boolean>
   isMaximized: () => Promise<boolean>
   setPhase: (phase: 'desktop' | 'chat') => Promise<void>
+  /** Opens an indexed document in whatever program Windows associates with it. */
+  openDocument: (id: string) => Promise<boolean>
+  /** Shows an indexed document selected in File Explorer. */
+  revealDocument: (id: string) => Promise<boolean>
   onMaximizeChange: (cb: (maxed: boolean) => void) => () => void
 }
 

@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 
 import { startServer } from '../server/index.mjs'
+import { documentPath, initDocs } from '../server/docs/routes.mjs'
 import { DocIndex } from '../server/docs/index.mjs'
 
 const APP = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -181,6 +182,30 @@ test('no tool is offered when the library is not indexed', async () => {
     'a search tool was advertised with nothing behind it, which teaches Ø the library is broken',
   )
 })
+
+// The desktop shell can launch a document in another program. That capability
+// is worth exactly one check: that the renderer cannot aim it. It passes an id,
+// and an id that is not in the index resolves to nothing at all - so the set of
+// launchable files is the set the user chose to index, and no string the
+// renderer invents can widen it.
+test('only indexed documents resolve to a path the shell may open', async () => {
+  await initDocs(indexDir, [docs])
+  const [known] = [...(await searchIds())]
+  assert.ok(known, 'nothing was indexed, so this proves nothing')
+  assert.equal(documentPath(known), join(docs, 'Balancete Trimestral 2025.md'))
+
+  for (const forged of ['', 'not-an-id', join(docs, '..', '..', 'secrets.txt'), 'C:\Windows\notepad.exe']) {
+    assert.equal(documentPath(forged), null, `a forged id resolved to a path: ${forged}`)
+  }
+})
+
+/** The ids of every indexed document, read back from the index on disk. */
+async function searchIds() {
+  const fresh = await new DocIndex(indexDir).load()
+  return [...fresh.docs.values()]
+    .filter((d) => d.name === 'Balancete Trimestral 2025.md')
+    .map((d) => d.id)
+}
 
 test.after(async () => {
   await new Promise((r) => upstream.close(r))

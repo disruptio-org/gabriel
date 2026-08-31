@@ -1,5 +1,7 @@
 import { useState, type RefObject } from 'react'
+import { openDocument, revealDocument } from '../lib/docs'
 import { c, mono, sans } from '../theme'
+import type { FoundDoc } from '../lib/claude'
 import type { FoundInTurn, Message } from '../types'
 import { Glyph } from './Glyph'
 import { Markdown } from './Markdown'
@@ -35,6 +37,9 @@ function Turn({
   onCopy,
   onRegenerate,
   onConnect,
+  onView,
+  onAttach,
+  attached,
 }: {
   m: Message
   streaming: boolean
@@ -43,6 +48,9 @@ function Turn({
   onCopy: () => void
   onRegenerate: () => void
   onConnect: () => void
+  onView: (id: string) => void
+  onAttach: (id: string) => void
+  attached: Set<string>
 }) {
   const isUser = m.role === 'user'
   const [hover, setHover] = useState(false)
@@ -91,7 +99,9 @@ function Turn({
         <Markdown text={m.content} streaming={streaming} />
       )}
 
-      {m.found && m.found.length > 0 && <Found found={m.found} />}
+      {m.found && m.found.length > 0 && (
+        <Found found={m.found} onView={onView} onAttach={onAttach} attached={attached} />
+      )}
 
       {m.stopped && (
         <div
@@ -143,6 +153,9 @@ export function Chat({
   convoRef,
   onRegenerate,
   onConnect,
+  onView,
+  onAttach,
+  attached,
 }: {
   messages: Message[]
   thinking: boolean
@@ -151,6 +164,9 @@ export function Chat({
   convoRef: RefObject<HTMLDivElement | null>
   onRegenerate: () => void
   onConnect: () => void
+  onView: (id: string) => void
+  onAttach: (id: string) => void
+  attached: Set<string>
 }) {
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -204,6 +220,9 @@ export function Chat({
               }}
               onRegenerate={onRegenerate}
               onConnect={onConnect}
+              onView={onView}
+              onAttach={onAttach}
+              attached={attached}
             />
           )
         })}
@@ -240,7 +259,17 @@ export function Chat({
  * has been read: these are names, and what to do with one is the reader's
  * decision.
  */
-function Found({ found }: { found: FoundInTurn[] }) {
+function Found({
+  found,
+  onView,
+  onAttach,
+  attached,
+}: {
+  found: FoundInTurn[]
+  onView: (id: string) => void
+  onAttach: (id: string) => void
+  attached: Set<string>
+}) {
   // The same document can surface in two searches within one turn; showing it
   // twice would suggest there are two of it.
   const seen = new Set<string>()
@@ -274,29 +303,110 @@ function Found({ found }: { found: FoundInTurn[] }) {
         FOUND IN YOUR DOCUMENTS
       </div>
       {rows.map((r) => (
-        <div
+        <FoundRow
           key={r.id}
+          r={r}
+          onView={() => onView(r.id)}
+          onAttach={() => onAttach(r.id)}
+          attached={attached.has(r.id)}
+        />
+      ))}
+    </div>
+  )
+}
+
+
+/**
+ * A found document, and what can be done with it.
+ *
+ * The four actions are deliberately different in kind, and the row says so by
+ * ordering them from least to most consequential. VIEW and REVEAL stay on this
+ * machine. OPEN hands the file to another program. ATTACH is the only one that
+ * can lead to text leaving: it stages the document, and the approval sheet on
+ * the next send still decides what actually goes.
+ */
+function FoundRow({
+  r,
+  onView,
+  onAttach,
+  attached,
+}: {
+  r: FoundDoc
+  onView: () => void
+  onAttach: () => void
+  attached: boolean
+}) {
+  const [hover, setHover] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  // A handoff to the OS can simply not happen - the file moved, or this is a
+  // browser tab with no shell behind it. Saying which is better than a button
+  // that appears to do nothing.
+  const hand = async (run: () => Promise<'ok' | 'failed' | 'unsupported'>, verb: string) => {
+    const result = await run()
+    if (result === 'ok') return
+    setNote(result === 'unsupported' ? `${verb} NEEDS THE DESKTOP APP` : `COULD NOT ${verb}`)
+    window.setTimeout(() => setNote(null), 2600)
+  }
+
+  return (
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{ display: 'flex', flexDirection: 'column', gap: 3 }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 10,
+          fontFamily: mono,
+          fontSize: 11.5,
+          color: c.faint,
+        }}
+      >
+        <span style={{ color: c.dim, fontSize: 9.5, letterSpacing: 1, minWidth: 34 }}>
+          {r.ext.replace('.', '').toUpperCase()}
+        </span>
+        <span
           style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 10,
-            fontFamily: mono,
-            fontSize: 11.5,
-            color: c.faint,
+            color: c.code,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
           }}
         >
-          <span style={{ color: c.dim, fontSize: 9.5, letterSpacing: 1, minWidth: 34 }}>
-            {r.ext.replace('.', '').toUpperCase()}
+          {r.name}
+        </span>
+        <span style={{ color: c.fainter, fontSize: 9.5, letterSpacing: 1, marginLeft: 'auto' }}>
+          {r.modified}
+          {r.copies ? ` · ${r.copies} COPIES` : ''}
+        </span>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          gap: 14,
+          paddingLeft: 44,
+          height: 14,
+          opacity: hover ? 1 : 0,
+          transition: 'opacity 160ms ease',
+        }}
+      >
+        {note ? (
+          <span style={{ color: c.warm, fontFamily: mono, fontSize: 9.5, letterSpacing: 2 }}>
+            {note}
           </span>
-          <span style={{ color: c.code, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {r.name}
-          </span>
-          <span style={{ color: c.fainter, fontSize: 9.5, letterSpacing: 1, marginLeft: 'auto' }}>
-            {r.modified}
-            {r.copies ? ` · ${r.copies} COPIES` : ''}
-          </span>
-        </div>
-      ))}
+        ) : (
+          <>
+            <Action label="VIEW" onClick={onView} />
+            <Action label="REVEAL" onClick={() => void hand(() => revealDocument(r.id), 'REVEAL')} />
+            <Action label="OPEN" onClick={() => void hand(() => openDocument(r.id), 'OPEN')} />
+            <Action label={attached ? 'ATTACHED' : 'ATTACH'} onClick={onAttach} />
+          </>
+        )}
+      </div>
     </div>
   )
 }

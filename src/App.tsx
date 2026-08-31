@@ -5,12 +5,13 @@ import { Composer } from './components/Composer'
 import { Approval } from './components/Approval'
 import { Connection } from './components/Connection'
 import { VoiceConsent } from './components/VoiceConsent'
+import { DocReader } from './components/DocReader'
 import { Library } from './components/Library'
 import { Desktop } from './components/Desktop'
 import { effectiveMotion, loadConfig, saveConfig } from './config'
 import { checkHealth, streamChat, PRIMARY } from './lib/claude'
 import type { ProviderId, ProviderStatus } from './lib/claude'
-import { searchDocs, type Attachment, type DocHit } from './lib/docs'
+import { docText, searchDocs, type Attachment, type DocHit, type DocText } from './lib/docs'
 import { isDesktopApp, shell } from './lib/shell'
 import { c, ease, mono } from './theme'
 import type { FoundInTurn, Message, Phase } from './types'
@@ -90,6 +91,16 @@ export default function App() {
   // other off, visibly.
   const [handsFree, setHandsFree] = useState(false)
   const [showLibrary, setShowLibrary] = useState(false)
+  /** A document Ø found, being read in the app. Reading is entirely local. */
+  const [reading, setReading] = useState<DocText | null>(null)
+  /**
+   * Documents the user attached from a found row, held as ids only.
+   *
+   * The passage is not chosen here: it is chosen at send time against the
+   * question actually being asked, and it still goes through the approval sheet
+   * like everything else. Attaching stages a document; it does not send one.
+   */
+  const [staged, setStaged] = useState<Set<string>>(new Set())
   // Consent is per send: this only decides whether the local search runs at all.
   const [useDocs, setUseDocs] = useState(true)
   const [pending, setPending] = useState<{ text: string; next: Message[]; hits: DocHit[] } | null>(
@@ -261,18 +272,30 @@ export default function App() {
   const send = useCallback(
     async (text: string) => {
       const next: Message[] = [...messages, { id: uid(), role: 'user', content: text }]
+      const hits: DocHit[] = []
+
+      // Attached documents come first: the user pointed at these by name, so
+      // they are not competing with a search for a place in the sheet.
+      for (const id of staged) {
+        const d = await docText(id, text)
+        if (d) hits.push(d)
+      }
+
       if (docsActive) {
-        const hits = (await searchDocs(text, 5)).filter((h) => h.passage && h.passage.hits > 0)
-        if (hits.length > 0) {
-          setPending({ text, next, hits })
-          return
-        }
+        const found = (await searchDocs(text, 5)).filter((h) => h.passage && h.passage.hits > 0)
+        for (const h of found) if (!staged.has(h.id)) hits.push(h)
+      }
+
+      if (hits.length > 0) {
+        setStaged(new Set())
+        setPending({ text, next, hits })
+        return
       }
       setMessages(next)
       generate(next)
       scrollBottom()
     },
-    [docsActive, generate, messages, scrollBottom],
+    [docsActive, generate, messages, scrollBottom, staged],
   )
 
   /** Drops trailing assistant turns and re-runs from the last user message. */
@@ -478,6 +501,16 @@ export default function App() {
                 convoRef={convoRef}
                 onRegenerate={regenerate}
                 onConnect={() => setShowConnection(true)}
+                onView={(id) => void docText(id).then((d) => d && setReading(d))}
+                onAttach={(id) =>
+                  setStaged((prev) => {
+                    const nextSet = new Set(prev)
+                    if (nextSet.has(id)) nextSet.delete(id)
+                    else nextSet.add(id)
+                    return nextSet
+                  })
+                }
+                attached={staged}
               />
               <Composer
                 inputRef={promptRef}
@@ -486,6 +519,9 @@ export default function App() {
                 onConnect={() => setShowConnection(true)}
                 docs={docsActive}
                 onToggleDocs={() => {
+                  // DOCS OFF means off: anything staged earlier is dropped
+                  // rather than left to surface on the next send.
+                  setStaged(new Set())
                   setUseDocs((v) => !v)
                   setHandsFree(false)
                 }}
@@ -537,6 +573,8 @@ export default function App() {
               }}
             />
           )}
+
+          {reading && <DocReader doc={reading} onClose={() => setReading(null)} />}
 
           {showLibrary && <Library onClose={() => setShowLibrary(false)} />}
 

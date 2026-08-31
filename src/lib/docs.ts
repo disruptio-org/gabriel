@@ -1,5 +1,6 @@
 // Client for the local library. Every call here is to 127.0.0.1 - the service
 // on this machine that owns the index. Nothing in this file talks to Claude.
+import { shell } from './shell'
 
 export interface DocHit {
   id: string
@@ -80,6 +81,28 @@ export interface DocText extends DocHit {
 
 export const docText = (id: string, q?: string) =>
   get<DocText>(`/api/docs/text?id=${encodeURIComponent(id)}${q ? `&q=${encodeURIComponent(q)}` : ''}`)
+
+/**
+ * Handing a document to the rest of the machine.
+ *
+ * Both take an id, never a path: the shell resolves it against the index, so
+ * the renderer cannot name an arbitrary file to launch. In a browser tab there
+ * is no shell at all, which is not a failure worth reporting as one - the
+ * caller gets 'unsupported' and can say so plainly.
+ */
+export type HandoffResult = 'ok' | 'failed' | 'unsupported'
+
+const handoff = async (fn: ((id: string) => Promise<boolean>) | undefined, id: string) => {
+  if (!fn) return 'unsupported' as const
+  try {
+    return (await fn(id)) ? ('ok' as const) : ('failed' as const)
+  } catch {
+    return 'failed' as const
+  }
+}
+
+export const openDocument = (id: string) => handoff(shell?.openDocument, id)
+export const revealDocument = (id: string) => handoff(shell?.revealDocument, id)
 
 /** Trims a Windows path down to something that fits on one line. */
 export function shortPath(path: string, keep = 3): string {

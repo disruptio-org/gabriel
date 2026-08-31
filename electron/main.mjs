@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { startServer } from '../server/index.mjs'
 import { defaultRoots } from '../server/docs/roots.mjs'
+import { documentPath } from '../server/docs/routes.mjs'
 import { PROVIDER_IDS, PRIMARY, setKeyEnv } from '../server/providers.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -139,6 +140,27 @@ ipcMain.handle('pi:toggleMaximize', () => {
   if (win.isMaximized()) win.unmaximize()
   else win.maximize()
   return win.isMaximized()
+})
+
+// Opening a document in whatever program Windows associates with it is the
+// sharpest thing this app can do, so it is deliberately narrow: it takes an
+// index id, the service turns that into a path only if the document is still
+// inside a folder the user chose, and nothing else can reach it. Ø cannot call
+// these - they run on a click, in the renderer, and the model has no route to
+// the bridge. Both answer false rather than throwing, so a moved or deleted
+// file shows as a refusal in the UI instead of a broken button.
+ipcMain.handle('pi:openDocument', async (_e, id) => {
+  const path = documentPath(id)
+  if (!path) return false
+  // openPath resolves to '' on success and to an error string otherwise.
+  return (await shell.openPath(path)) === ''
+})
+
+ipcMain.handle('pi:revealDocument', (_e, id) => {
+  const path = documentPath(id)
+  if (!path) return false
+  shell.showItemInFolder(path)
+  return true
 })
 
 // Phase changes resize the real window instead of a div.
