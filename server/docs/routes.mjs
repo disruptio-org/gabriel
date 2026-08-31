@@ -8,11 +8,13 @@
 //      to /api/chat as an explicit attachment.
 import { stat } from 'node:fs/promises'
 import { DocIndex } from './index.mjs'
+import { Watcher } from './watch.mjs'
 import { search, bestPassage } from './search.mjs'
 import { tokenize } from './index.mjs'
 
 let index = null
 let building = null
+let watcher = null
 
 export async function initDocs(dir, defaultRoots = []) {
   index = await new DocIndex(dir).load()
@@ -24,7 +26,18 @@ export async function initDocs(dir, defaultRoots = []) {
   // and rebuilding it takes about a minute on a large library. Do that now, in
   // the background, rather than silently under the user's first search.
   void index.ensurePostings().catch((err) => console.error('[docs] postings:', err.message))
+  // From here the index keeps itself level with the disk. A file saved a
+  // moment ago is findable a moment later, without anyone pressing anything.
+  await watcher?.stop()
+  watcher = new Watcher(index).start()
   return index
+}
+
+/** Stops watching. Only the tests need this; the app watches until it exits. */
+export async function stopDocs() {
+  const done = watcher?.stop()
+  watcher = null
+  await done
 }
 
 export const docsReady = () => index !== null
@@ -173,7 +186,13 @@ export async function handleDocs(req, res, url, body) {
   const route = url.pathname.slice('/api/docs/'.length)
 
   if (req.method === 'GET' && route === 'status') {
-    return json(res, 200, { ...index.status(), building: Boolean(building) })
+    return json(res, 200, {
+      ...index.status(),
+      building: Boolean(building),
+      live: Boolean(watcher && watcher.watchers.length > 0),
+      liveIndexed: watcher?.indexed ?? 0,
+      liveRemoved: watcher?.removed ?? 0,
+    })
   }
 
   if (req.method === 'POST' && route === 'reindex') {
@@ -199,6 +218,10 @@ export async function handleDocs(req, res, url, body) {
     }
     if (remove) index.roots = index.roots.filter((r) => r !== remove)
     await index.save()
+    // The watcher holds one handle per root, so a root added or dropped now
+    // means a new set of handles.
+    await watcher?.stop()
+    watcher = new Watcher(index).start()
     if (add) startBuild()
     return json(res, 200, { roots: index.roots })
   }

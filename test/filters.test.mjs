@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { mkdir, rm, writeFile, utimes } from 'node:fs/promises'
 
 import { DocIndex } from '../server/docs/index.mjs'
-import { initDocs, findDocuments } from '../server/docs/routes.mjs'
+import { initDocs, stopDocs, findDocuments } from '../server/docs/routes.mjs'
 
 const dir = join(tmpdir(), 'pi-test-filters')
 const docs = join(dir, 'docs')
@@ -115,5 +115,8 @@ test('a filter the model got wrong narrows nothing rather than everything', asyn
 })
 
 test.after(async () => {
+  // initDocs starts watching the fixture folder. Nothing else will stop it,
+  // and a watched directory that is about to be deleted keeps the process up.
+  await stopDocs()
   await rm(dir, { recursive: true, force: true })
 })

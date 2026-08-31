@@ -51,6 +51,30 @@ export class EmptyDocument extends Error {
 
 export const isSecretName = (name) => SECRET_PATTERNS.some((re) => re.test(name))
 
+/** Whether a file's own name admits it to the index, ignoring where it sits. */
+export const indexable = (name) =>
+  SUPPORTED.has(extname(name).toLowerCase()) && !isSecretName(name)
+
+/**
+ * Whether a crawl of `root` would have reached this path.
+ *
+ * The walk decides this as it descends, one directory at a time. A watcher is
+ * handed a finished path instead, and has to ask the same question of all of
+ * it at once - so the rules live here, in one place, rather than being written
+ * twice and drifting apart.
+ *
+ * Only the segments *below the root* are judged, because those are the only
+ * ones the walk ever sees. The root itself was chosen by the user and is not
+ * up for reconsideration: a library kept in a folder that happens to be called
+ * `bin`, or under AppData, is still their library.
+ */
+export function crawlable(path, root) {
+  if (!indexable(basename(path))) return false
+  const rel = path.slice(root.length)
+  const parts = rel.split(/[\\/]+/).filter(Boolean).slice(0, -1)
+  return !parts.some((part) => part.startsWith('.') || SKIP_DIRS.has(part.toLowerCase()))
+}
+
 /** Accent-folded lowercase words. "Évora" and "evora" must be the same term. */
 export function tokenize(text) {
   return text
@@ -61,7 +85,7 @@ export function tokenize(text) {
     .filter((t) => t.length > 1 && t.length < 40)
 }
 
-const idFor = (path) => createHash('sha1').update(path.toLowerCase()).digest('hex').slice(0, 16)
+export const idFor = (path) => createHash('sha1').update(path.toLowerCase()).digest('hex').slice(0, 16)
 
 /**
  * On-disk layout, all under the app's own user-data directory:
@@ -90,6 +114,10 @@ export class DocIndex {
     this.fd = null
     this.offsets = null
     this.postingsBytes = 0
+    // Documents indexed since the term index on disk was last written, and
+    // their term counts. See #overlay below.
+    this.fresh = new Map() // term -> Map(docId -> tf)
+    this.freshDocs = new Set()
     this.progress = {
       state: 'idle',
       scanned: 0,
@@ -103,25 +131,68 @@ export class DocIndex {
 
   async load() {
     await mkdir(this.textDir, { recursive: true })
-    try {
-      const m = JSON.parse(await readFile(this.manifestFile, 'utf8'))
-      this.roots = m.roots ?? []
-      for (const d of m.docs ?? []) this.docs.set(d.id, d)
-      for (const [id, meta] of m.empties ?? []) this.empties.set(id, meta)
-    } catch {
-      /* first run */
+    // The previous manifest is tried first, then the backup. A manifest that
+    // exists but does not parse must not be treated as a first run: that would
+    // silently discard a library of tens of thousands of documents and the
+    // folders the user chose, and the next save would write the emptiness back
+    // over the only copy.
+    for (const file of [this.manifestFile, `${this.manifestFile}.bak`]) {
+      let raw
+      try {
+        raw = await readFile(file, 'utf8')
+      } catch {
+        continue // genuinely absent
+      }
+      try {
+        const m = JSON.parse(raw)
+        this.roots = m.roots ?? []
+        for (const d of m.docs ?? []) this.docs.set(d.id, d)
+        for (const [id, meta] of m.empties ?? []) this.empties.set(id, meta)
+        return this
+      } catch (err) {
+        console.error('[docs] unreadable manifest', file, '-', err.message)
+      }
     }
     return this
   }
 
+  /**
+   * Writes the manifest.
+   *
+   * Through a temporary file and a rename, because the previous version wrote
+   * over the live one in place: a crash, or the watcher and a crawl saving at
+   * the same moment, left a half-written file that parses as nothing. Rename is
+   * atomic within a volume, so the manifest on disk is always one whole save or
+   * the one before it. The previous good copy is kept as .bak.
+   *
+   * Saves are also serialised. Two overlapping writes to one path interleave
+   * their chunks, which is how a truncated manifest happens without any crash.
+   */
   async save() {
+    this.saving = Promise.resolve(this.saving).catch(() => {}).then(() => this.#save())
+    return this.saving
+  }
+
+  async #save() {
     const payload = {
       version: 1,
       roots: this.roots,
       docs: [...this.docs.values()],
       empties: [...this.empties],
     }
-    await writeFile(this.manifestFile, JSON.stringify(payload), 'utf8')
+    const tmp = `${this.manifestFile}.tmp`
+    const bak = `${this.manifestFile}.bak`
+    const json = JSON.stringify(payload)
+    await writeFile(tmp, json, 'utf8')
+    try {
+      await rename(this.manifestFile, bak)
+    } catch {
+      // No previous version to demote - the first save of a new library. Write
+      // the backup outright rather than leaving this one save with no second
+      // copy, which is the state a first crawl spends its whole length in.
+      await writeFile(bak, json, 'utf8')
+    }
+    await rename(tmp, this.manifestFile)
   }
 
   status() {
@@ -155,8 +226,7 @@ export class DocIndex {
         if (e.name.startsWith('.') || SKIP_DIRS.has(e.name.toLowerCase())) continue
         yield* this.walk(full, depth + 1)
       } else if (e.isFile()) {
-        if (!SUPPORTED.has(extname(e.name).toLowerCase())) continue
-        if (isSecretName(e.name)) continue
+        if (!indexable(e.name)) continue
         yield full
       }
     }
@@ -169,7 +239,7 @@ export class DocIndex {
     return !known || known.size !== st.size || known.mtime !== st.mtimeMs
   }
 
-  async indexFile(path, st) {
+  async indexFile(path, st, { live = false } = {}) {
     const id = idFor(path)
     const text = await extractText(path)
     // A PDF that is a photograph of a page has no text layer at all. That is
@@ -188,7 +258,63 @@ export class DocIndex {
       indexedAt: Date.now(),
     })
     this.dirty = true
+    if (live) this.#remember(id, text)
     return id
+  }
+
+  // ---- the overlay --------------------------------------------------------
+  //
+  // postings.jsonl is one sorted line per term over the whole library, and the
+  // offset table beside it is only meaningful for that exact file. Adding a
+  // single document means writing all 298MB again - a minute of disk on a real
+  // library, for one saved file. Doing that per change is not an option, and
+  // waiting for the next full rebuild would mean a file you just wrote is not
+  // searchable by its contents for hours.
+  //
+  // So freshly indexed documents keep their term counts in memory, and lookup()
+  // answers from both: the disk list with those documents removed, plus what is
+  // held here. The result is indistinguishable from a rebuilt index, and the
+  // memory cost is bounded by how many files change between rebuilds rather
+  // than by the size of the library.
+
+  /** Holds one document's term frequencies in memory until the next rebuild. */
+  #remember(id, text) {
+    this.#forgetFresh(id)
+    const counts = new Map()
+    for (const term of tokenize(text)) counts.set(term, (counts.get(term) ?? 0) + 1)
+    for (const [term, tf] of counts) {
+      let byDoc = this.fresh.get(term)
+      if (!byDoc) this.fresh.set(term, (byDoc = new Map()))
+      byDoc.set(id, tf)
+    }
+    this.freshDocs.add(id)
+  }
+
+  /** Drops a document from the overlay, leaving the disk list to speak for it. */
+  #forgetFresh(id) {
+    if (!this.freshDocs.delete(id)) return
+    for (const [term, byDoc] of this.fresh) {
+      if (byDoc.delete(id) && byDoc.size === 0) this.fresh.delete(term)
+    }
+  }
+
+  /**
+   * Removes a document from the index entirely - it was deleted or renamed.
+   *
+   * The stale posting lists on disk still name it, which is harmless: the
+   * ranking skips any id that is no longer a document.
+   */
+  async forget(id) {
+    this.#forgetFresh(id)
+    this.docs.delete(id)
+    this.empties.delete(id)
+    this._titles?.delete(id)
+    this.dirty = true
+    try {
+      await rm(join(this.textDir, `${id}.txt`))
+    } catch {
+      /* already gone */
+    }
   }
 
   /**
@@ -286,6 +412,19 @@ export class DocIndex {
    * than assembled as one enormous string.
    */
   async buildPostings() {
+    // Searches keep arriving while this runs. From closePostings() until the
+    // rename, there is no consistent pair of files on disk to open - the old
+    // offsets no longer describe the new postings. A reader that slipped in
+    // there would either answer from mismatched files or start a second
+    // rebuild on top of this one, so everyone waits on the same promise.
+    if (this.rebuilding) return this.rebuilding
+    this.rebuilding = this.#buildPostings().finally(() => {
+      this.rebuilding = null
+    })
+    return this.rebuilding
+  }
+
+  async #buildPostings() {
     await this.closePostings()
 
     const ids = [...this.docs.keys()]
@@ -334,6 +473,9 @@ export class DocIndex {
     await writeFile(tmpOffsets, offsets)
     // Rename last, and offsets first: a half-written pair must never be read.
     await rename(tmpPostings, this.postingsFile)
+    // Everything the overlay was standing in for is now on disk.
+    this.fresh.clear()
+    this.freshDocs.clear()
     await rename(tmpOffsets, this.offsetsFile)
     this.postingsBytes = pos
   }
@@ -346,6 +488,7 @@ export class DocIndex {
    * the first rather than starting a second rebuild.
    */
   ensurePostings() {
+    if (this.rebuilding) return this.rebuilding.then(() => this.ensurePostings())
     if (this.fd) return Promise.resolve()
     this.opening ??= this.#openPostings().finally(() => {
       this.opening = null
@@ -398,6 +541,16 @@ export class DocIndex {
    * Returns an empty list for a term the index has never seen.
    */
   async lookup(term) {
+    const list = await this.#lookupOnDisk(term)
+    if (this.freshDocs.size === 0) return list
+    // A document in the overlay may also sit in the disk list, from before it
+    // was edited. The overlay is the newer of the two, so the disk entry goes.
+    const merged = list.filter(([id]) => !this.freshDocs.has(id))
+    for (const [id, tf] of this.fresh.get(term) ?? []) merged.push([id, tf])
+    return merged
+  }
+
+  async #lookupOnDisk(term) {
     await this.ensurePostings()
     let lo = 0
     let hi = this.termCount - 1

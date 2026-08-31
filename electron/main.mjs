@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { startServer } from '../server/index.mjs'
 import { defaultRoots } from '../server/docs/roots.mjs'
-import { documentPath } from '../server/docs/routes.mjs'
+import { documentPath, stopDocs } from '../server/docs/routes.mjs'
 import { PROVIDER_IDS, PRIMARY, setKeyEnv } from '../server/providers.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -185,3 +185,18 @@ app.on('activate', () => {
 })
 
 app.on('window-all-closed', () => app.quit())
+
+// Files indexed since the last periodic save live only in memory. Quitting
+// without writing them means the next launch has to find them all over again,
+// so the quit waits - once, briefly - for that write.
+let flushed = false
+app.on('before-quit', (event) => {
+  if (flushed) return
+  event.preventDefault()
+  void stopDocs()
+    .catch((err) => console.error('[docs] shutdown:', err.message))
+    .finally(() => {
+      flushed = true
+      app.quit()
+    })
+})

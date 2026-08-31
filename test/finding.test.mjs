@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 
 import { startServer } from '../server/index.mjs'
-import { documentPath, initDocs } from '../server/docs/routes.mjs'
+import { documentPath, initDocs, stopDocs } from '../server/docs/routes.mjs'
 import { DocIndex } from '../server/docs/index.mjs'
 
 const APP = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -208,6 +208,9 @@ async function searchIds() {
 }
 
 test.after(async () => {
+  // initDocs starts watching the fixture folder. Nothing else will stop it,
+  // and a watched directory that is about to be deleted keeps the process up.
+  await stopDocs()
   await new Promise((r) => upstream.close(r))
   await rm(dir, { recursive: true, force: true })
 })
