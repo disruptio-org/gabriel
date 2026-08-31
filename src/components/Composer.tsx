@@ -29,7 +29,7 @@ export function Composer({
   onSend: (text: string) => void
   onStop: () => void
   onConnect: () => void
-  /** Whether a send searches the local library first. Consent is still per send. */
+  /** Whether Ø may search the local library at all. Sending any of it is a separate, per-send consent. */
   docs: boolean
   onToggleDocs: () => void
   /** Whether an OpenAI key is stored. Voice is the only thing it gates. */
@@ -326,7 +326,7 @@ export function Composer({
                 handsFree
                   ? 'Documents need approval at the keyboard, which hands-free does not have'
                   : docs
-                    ? 'Ø checks your local library and asks before sending anything from it (Ctrl+D to browse)'
+                    ? 'Ø can search your local library; nothing from a document is sent unless you attach it and approve (Ctrl+D to browse)'
                     : 'Ø ignores your documents entirely'
               }
               style={{

@@ -4,9 +4,9 @@ import { shortPath } from '../lib/docs'
 import { c, ease, mono, sans } from '../theme'
 
 /**
- * The consent gate. Ø found these passages on this machine; nothing here has
- * left it. This sheet shows the exact text that would be sent, per file, and
- * sends only what is still ticked when the user confirms.
+ * The consent gate. These passages came off this machine's index; nothing here
+ * has left it. This sheet shows the exact text that would be sent, per file,
+ * and sends only what is still ticked when the user confirms.
  *
  * Deliberately shows the passage in full rather than a summary of it: the
  * point of approving is seeing what you are approving.
@@ -103,9 +103,10 @@ export function Approval({
               marginTop: 8,
             }}
           >
-            {hits.length} {hits.length === 1 ? 'file on this machine matches' : 'files on this machine match'}{' '}
-            “{question.length > 70 ? question.slice(0, 70) + '…' : question}”. Only the passages you
-            leave ticked are sent — never the whole file.
+            You attached {hits.length} {hits.length === 1 ? 'file' : 'files'}. Below is the part
+            of each that would go with “
+            {question.length > 70 ? question.slice(0, 70) + '…' : question}” — only what you leave
+            ticked is sent, never the whole file.
           </div>
         </div>
 

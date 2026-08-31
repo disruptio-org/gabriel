@@ -11,7 +11,7 @@ import { Desktop } from './components/Desktop'
 import { effectiveMotion, loadConfig, saveConfig } from './config'
 import { checkHealth, streamChat, PRIMARY } from './lib/claude'
 import type { ProviderId, ProviderStatus } from './lib/claude'
-import { docText, searchDocs, type Attachment, type DocHit, type DocText } from './lib/docs'
+import { docText, type Attachment, type DocHit, type DocText } from './lib/docs'
 import { isDesktopApp, shell } from './lib/shell'
 import { c, ease, mono } from './theme'
 import type { FoundInTurn, Message, Phase } from './types'
@@ -264,26 +264,29 @@ export default function App() {
   )
 
   /**
-   * A send is a two-step act when the local library has something to say about
-   * the question: search happens on this machine, and the passages it finds are
-   * shown for approval before any of them travel. Answering "no" still sends
-   * the question - only the document text is withheld.
+   * A send carries document text only when the user attached something.
+   *
+   * It used to search the library on every send and offer whatever came back.
+   * That was the only way to reach the approval sheet, so it had to be there -
+   * but it meant a sheet appearing unbidden on questions that had nothing to do
+   * with any file, and the user approving passages they had not asked for.
+   * Attaching is the deliberate act now: Ø finds documents when it decides they
+   * are relevant, and the user says which of them to bring along. The sheet
+   * still decides what actually travels.
    */
   const send = useCallback(
     async (text: string) => {
       const next: Message[] = [...messages, { id: uid(), role: 'user', content: text }]
       const hits: DocHit[] = []
 
-      // Attached documents come first: the user pointed at these by name, so
-      // they are not competing with a search for a place in the sheet.
       for (const id of staged) {
         const d = await docText(id, text)
-        if (d) hits.push(d)
-      }
-
-      if (docsActive) {
-        const found = (await searchDocs(text, 5)).filter((h) => h.passage && h.passage.hits > 0)
-        for (const h of found) if (!staged.has(h.id)) hits.push(h)
+        if (!d) continue
+        // A document attached by name need not share any words with the
+        // question - "summarise this" matches nothing in the text. Without a
+        // passage the sheet would drop it silently, so fall back to the opening
+        // of the document. The user still sees exactly what that is.
+        hits.push(d.passage ? d : { ...d, passage: { text: d.text.slice(0, 4000), offset: 0, hits: 0 } })
       }
 
       if (hits.length > 0) {
@@ -295,7 +298,7 @@ export default function App() {
       generate(next)
       scrollBottom()
     },
-    [docsActive, generate, messages, scrollBottom, staged],
+    [generate, messages, scrollBottom, staged],
   )
 
   /** Drops trailing assistant turns and re-runs from the last user message. */
