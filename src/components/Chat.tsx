@@ -1,33 +1,10 @@
 import { useState, type RefObject } from 'react'
-import { openDocument, revealDocument } from '../lib/docs'
+import { Action, Handoff } from './DocActions'
 import { c, mono, sans } from '../theme'
 import type { FoundDoc } from '../lib/claude'
 import type { FoundInTurn, Message } from '../types'
 import { Glyph } from './Glyph'
 import { Markdown } from './Markdown'
-
-function Action({ label, onClick }: { label: string; onClick: () => void }) {
-  const [hover, setHover] = useState(false)
-  return (
-    <span
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      onKeyDown={(e) => e.key === 'Enter' && onClick()}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        color: hover ? c.accent : c.faint,
-        fontSize: 10,
-        letterSpacing: 2,
-        cursor: 'pointer',
-        fontFamily: mono,
-      }}
-    >
-      {label}
-    </span>
-  )
-}
 
 function Turn({
   m,
@@ -337,17 +314,6 @@ function FoundRow({
   attached: boolean
 }) {
   const [hover, setHover] = useState(false)
-  const [note, setNote] = useState<string | null>(null)
-
-  // A handoff to the OS can simply not happen - the file moved, or this is a
-  // browser tab with no shell behind it. Saying which is better than a button
-  // that appears to do nothing.
-  const hand = async (run: () => Promise<'ok' | 'failed' | 'unsupported'>, verb: string) => {
-    const result = await run()
-    if (result === 'ok') return
-    setNote(result === 'unsupported' ? `${verb} NEEDS THE DESKTOP APP` : `COULD NOT ${verb}`)
-    window.setTimeout(() => setNote(null), 2600)
-  }
 
   return (
     <div
@@ -394,18 +360,9 @@ function FoundRow({
           transition: 'opacity 160ms ease',
         }}
       >
-        {note ? (
-          <span style={{ color: c.warm, fontFamily: mono, fontSize: 9.5, letterSpacing: 2 }}>
-            {note}
-          </span>
-        ) : (
-          <>
-            <Action label="VIEW" onClick={onView} />
-            <Action label="REVEAL" onClick={() => void hand(() => revealDocument(r.id), 'REVEAL')} />
-            <Action label="OPEN" onClick={() => void hand(() => openDocument(r.id), 'OPEN')} />
-            <Action label={attached ? 'ATTACHED' : 'ATTACH'} onClick={onAttach} />
-          </>
-        )}
+        <Action label="VIEW" onClick={onView} />
+        <Handoff id={r.id} />
+        <Action label={attached ? 'ATTACHED' : 'ATTACH'} onClick={onAttach} />
       </div>
     </div>
   )

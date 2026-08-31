@@ -11,6 +11,7 @@ import {
   type DocHit,
   type DocsStatus,
 } from '../lib/docs'
+import { Handoff } from './DocActions'
 import { c, ease, mono, sans } from '../theme'
 
 /**
@@ -206,41 +207,48 @@ function Results({ hits, onOpen }: { hits: DocHit[]; onOpen: (h: DocHit) => void
   return (
     <div style={{ padding: '8px 0' }}>
       {hits.map((h) => (
-        <button
-          key={h.id}
-          type="button"
-          onClick={() => onOpen(h)}
-          style={{
-            display: 'block',
-            width: '100%',
-            textAlign: 'left',
-            background: 'none',
-            border: 'none',
-            borderBottom: `1px solid ${c.border}`,
-            padding: '12px 24px',
-            cursor: 'pointer',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-            <span style={{ color: c.text, fontFamily: mono, fontSize: 12 }}>{h.name}</span>
-            <span style={{ color: c.fainter, fontFamily: mono, fontSize: 9.5, marginLeft: 'auto' }}>
-              {shortPath(h.path)}
-            </span>
+        <div key={h.id} style={{ borderBottom: `1px solid ${c.border}`, padding: '12px 24px' }}>
+          {/* The row itself reads the document; the strip below hands it to the
+              rest of the machine. Two different kinds of act, so two controls. */}
+          <button
+            type="button"
+            onClick={() => onOpen(h)}
+            style={{
+              display: 'block',
+              width: '100%',
+              textAlign: 'left',
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+              <span style={{ color: c.text, fontFamily: mono, fontSize: 12 }}>{h.name}</span>
+              <span
+                style={{ color: c.fainter, fontFamily: mono, fontSize: 9.5, marginLeft: 'auto' }}
+              >
+                {shortPath(h.path)}
+              </span>
+            </div>
+            {h.passage && (
+              <p
+                style={{
+                  color: c.faint,
+                  fontFamily: sans,
+                  fontSize: 12.5,
+                  lineHeight: 1.6,
+                  margin: '6px 0 0',
+                }}
+              >
+                {h.passage.text.slice(0, 220).replace(/\s+/g, ' ')}…
+              </p>
+            )}
+          </button>
+          <div style={{ display: 'flex', gap: 14, marginTop: 8, alignItems: 'baseline' }}>
+            <Handoff id={h.id} />
           </div>
-          {h.passage && (
-            <p
-              style={{
-                color: c.faint,
-                fontFamily: sans,
-                fontSize: 12.5,
-                lineHeight: 1.6,
-                margin: '6px 0 0',
-              }}
-            >
-              {h.passage.text.slice(0, 220).replace(/\s+/g, ' ')}…
-            </p>
-          )}
-        </button>
+        </div>
       ))}
     </div>
   )
